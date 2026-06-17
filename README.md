@@ -296,7 +296,8 @@ hermes-box/
 │   ├── restore.sh
 │   ├── snapshot.sh
 │   ├── start.sh
-│   └── supervisord.conf
+│   ├── supervisord.conf
+│   └── workspace-seed.sh
 ├── tests/
 ├── Makefile
 ├── Smolfile
