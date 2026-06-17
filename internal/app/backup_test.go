@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/davis7dotsh/hermes-box/internal/config"
@@ -118,6 +119,38 @@ func TestSnapshotFailureDiscardsPartialBackup(t *testing.T) {
 	}
 }
 
+func TestSnapshotRestartFailureRetainsCompleteBackup(t *testing.T) {
+	root := t.TempDir()
+	cfg := config.Config{
+		MachineName: "test-box",
+		BuilderName: "test-builder",
+		SSHPort:     2223,
+		CPUs:        1,
+		MemoryMiB:   1,
+		StorageGB:   1,
+		OverlayGB:   1,
+		NetworkMode: "full",
+	}
+	runner := restartFailingSnapshotRunner{t: t}
+	application := New(root, cfg, runner, io.Discard, io.Discard)
+	if err := application.prepareDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := application.snapshotInternal(context.Background(), "restart-failure", true); err == nil {
+		t.Fatal("snapshotInternal succeeded")
+	}
+	entries, err := os.ReadDir(application.backupsDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("backup count = %d, want 1", len(entries))
+	}
+	if err := verifyBackup(filepath.Join(application.backupsDir, entries[0].Name())); err != nil {
+		t.Fatalf("retained backup is invalid: %v", err)
+	}
+}
+
 func createTestBackup(t *testing.T) string {
 	t.Helper()
 	directory := t.TempDir()
@@ -200,6 +233,50 @@ func (failingSnapshotRunner) Output(_ context.Context, spec process.Spec) ([]byt
 		spec.Args[0] == "machine" &&
 		spec.Args[1] == "status" {
 		return []byte(`{"state":"running"}`), nil
+	}
+	return nil, errors.New("unexpected output command")
+}
+
+type restartFailingSnapshotRunner struct {
+	t *testing.T
+}
+
+func (r restartFailingSnapshotRunner) Run(_ context.Context, spec process.Spec) error {
+	if spec.Name != "smolvm" {
+		return nil
+	}
+	if len(spec.Args) >= 3 &&
+		spec.Args[0] == "machine" &&
+		spec.Args[1] == "start" {
+		return errors.New("injected restart failure")
+	}
+	if len(spec.Args) >= 4 &&
+		spec.Args[0] == "machine" &&
+		spec.Args[1] == "cp" &&
+		!strings.Contains(spec.Args[3], ":") {
+		source := spec.Args[2]
+		destination := spec.Args[3]
+		switch {
+		case strings.HasSuffix(source, "rootfs.tar.gz"):
+			writeArchive(r.t, destination, []string{"./", "./etc/", "./etc/hosts"})
+		case strings.HasSuffix(source, "workspace.tar.gz"):
+			writeArchive(r.t, destination, []string{"./", "./work/", "./work/example"})
+		case strings.HasSuffix(source, "snapshot-warnings.log"):
+			return os.WriteFile(destination, nil, 0o600)
+		}
+	}
+	return nil
+}
+
+func (restartFailingSnapshotRunner) Output(_ context.Context, spec process.Spec) ([]byte, error) {
+	if spec.Name == "smolvm" &&
+		len(spec.Args) >= 2 &&
+		spec.Args[0] == "machine" &&
+		spec.Args[1] == "status" {
+		return []byte(`{"state":"running"}`), nil
+	}
+	if spec.Name == "smolvm" && len(spec.Args) == 1 && spec.Args[0] == "--version" {
+		return []byte("smolvm 1.0.4\n"), nil
 	}
 	return nil, errors.New("unexpected output command")
 }

@@ -180,15 +180,15 @@ func (a *App) snapshotInternal(ctx context.Context, label string, restartAfter b
 			return "", err
 		}
 	}
+	createdBackupDir = ""
 
 	if restartAfter && wasRunning {
 		if err := a.startNamedMachine(ctx, name, a.config.SSHPort); err != nil {
-			return "", err
+			return "", fmt.Errorf("snapshot saved at %s, but failed to restart machine: %w", backupDir, err)
 		}
 		machineStopped = false
 		servicesStopped = false
 	}
-	createdBackupDir = ""
 	return backupDir, nil
 }
 

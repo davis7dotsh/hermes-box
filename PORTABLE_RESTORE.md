@@ -9,7 +9,7 @@ Requirements:
 - An ARM64 host supported by smolvm
 - smolvm 1.0.4
 - Go 1.24 or newer
-- `ssh`, `ssh-keygen`, and `lsof`
+- `shasum`, `ssh`, `ssh-keygen`, and `lsof`
 - Enough free space for a 15 GiB VM
 
 Restore:

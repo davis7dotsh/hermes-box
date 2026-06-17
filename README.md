@@ -180,6 +180,8 @@ The wrapper:
 6. Restarts the machine if it was previously running.
 
 Snapshots are stored under `backups/*.hermesbox`.
+A completed snapshot is retained and its path is reported if restarting the
+machine afterward fails.
 
 Restore:
 
