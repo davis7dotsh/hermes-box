@@ -1,0 +1,9 @@
+.DS_Store
+backups/*
+images/*
+state/*
+hermes-box.conf
+secret-env.txt
+!backups/.gitkeep
+!images/.gitkeep
+!state/.gitkeep

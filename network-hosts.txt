@@ -1,0 +1,6 @@
+# Reserved for a future smolvm release with enforceable hostname filtering.
+# smolvm 1.0.4 allowlists do not block direct-IP or unlisted-host egress, so
+# the wrapper fails closed if HERMES_BOX_NETWORK_MODE=strict is selected.
+api.openai.com
+api.anthropic.com
+api.telegram.org

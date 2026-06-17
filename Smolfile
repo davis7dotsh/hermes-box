@@ -1,0 +1,10 @@
+image = "ubuntu:24.04"
+entrypoint = ["/usr/local/sbin/hermes-box-start"]
+cmd = ["run"]
+cpus = 4
+memory = 8192
+storage = 15
+overlay = 6
+
+# The wrapper is authoritative because smolvm 1.0.4 cannot update hostname
+# allowlists in place and restore needs temporary machine names and ports.

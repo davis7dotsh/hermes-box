@@ -1,0 +1,762 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+source_path=${BASH_SOURCE[0]}
+while [[ -L $source_path ]]; do
+  source_dir=$(cd "$(dirname "$source_path")" && pwd)
+  source_path=$(readlink "$source_path")
+  [[ $source_path == /* ]] || source_path=$source_dir/$source_path
+done
+script_dir=$(cd "$(dirname "$source_path")" && pwd)
+project_root=$(cd "$script_dir/.." && pwd)
+
+env_machine_name_set=${HERMES_BOX_MACHINE_NAME+x}
+env_machine_name=${HERMES_BOX_MACHINE_NAME-}
+env_builder_name_set=${HERMES_BOX_BUILDER_NAME+x}
+env_builder_name=${HERMES_BOX_BUILDER_NAME-}
+env_ssh_port_set=${HERMES_BOX_SSH_PORT+x}
+env_ssh_port=${HERMES_BOX_SSH_PORT-}
+env_cpus_set=${HERMES_BOX_CPUS+x}
+env_cpus=${HERMES_BOX_CPUS-}
+env_memory_mib_set=${HERMES_BOX_MEMORY_MIB+x}
+env_memory_mib=${HERMES_BOX_MEMORY_MIB-}
+env_storage_gb_set=${HERMES_BOX_STORAGE_GB+x}
+env_storage_gb=${HERMES_BOX_STORAGE_GB-}
+env_overlay_gb_set=${HERMES_BOX_OVERLAY_GB+x}
+env_overlay_gb=${HERMES_BOX_OVERLAY_GB-}
+env_network_mode_set=${HERMES_BOX_NETWORK_MODE+x}
+env_network_mode=${HERMES_BOX_NETWORK_MODE-}
+env_hermes_commit_set=${HERMES_BOX_HERMES_COMMIT+x}
+env_hermes_commit=${HERMES_BOX_HERMES_COMMIT-}
+
+config_file=${HERMES_BOX_CONFIG:-"$project_root/hermes-box.conf"}
+if [[ -f $config_file ]]; then
+  # shellcheck source=/dev/null
+  source "$config_file"
+fi
+
+[[ $env_machine_name_set == x ]] && HERMES_BOX_MACHINE_NAME=$env_machine_name
+[[ $env_builder_name_set == x ]] && HERMES_BOX_BUILDER_NAME=$env_builder_name
+[[ $env_ssh_port_set == x ]] && HERMES_BOX_SSH_PORT=$env_ssh_port
+[[ $env_cpus_set == x ]] && HERMES_BOX_CPUS=$env_cpus
+[[ $env_memory_mib_set == x ]] && HERMES_BOX_MEMORY_MIB=$env_memory_mib
+[[ $env_storage_gb_set == x ]] && HERMES_BOX_STORAGE_GB=$env_storage_gb
+[[ $env_overlay_gb_set == x ]] && HERMES_BOX_OVERLAY_GB=$env_overlay_gb
+[[ $env_network_mode_set == x ]] && HERMES_BOX_NETWORK_MODE=$env_network_mode
+[[ $env_hermes_commit_set == x ]] && HERMES_BOX_HERMES_COMMIT=$env_hermes_commit
+
+machine_name=${HERMES_BOX_MACHINE_NAME:-hermes-box}
+builder_name=${HERMES_BOX_BUILDER_NAME:-hermes-builder}
+ssh_port=${HERMES_BOX_SSH_PORT:-2222}
+cpus=${HERMES_BOX_CPUS:-4}
+memory_mib=${HERMES_BOX_MEMORY_MIB:-8192}
+storage_gb=${HERMES_BOX_STORAGE_GB:-15}
+overlay_gb=${HERMES_BOX_OVERLAY_GB:-6}
+network_mode=${HERMES_BOX_NETWORK_MODE:-none}
+hermes_commit=${HERMES_BOX_HERMES_COMMIT:-}
+
+images_dir=$project_root/images
+backups_dir=$project_root/backups
+state_dir=$project_root/state
+base_output=$images_dir/hermes-base
+base_artifact=$base_output.smolmachine
+ssh_key=$state_dir/hermes-box-ed25519
+known_hosts=$state_dir/known_hosts
+network_hosts_file=$project_root/network-hosts.txt
+secret_env_file=$project_root/secret-env.txt
+
+log() {
+  printf '[hermes-box] %s\n' "$*" >&2
+}
+
+die() {
+  log "ERROR: $*"
+  exit 1
+}
+
+need() {
+  command -v "$1" >/dev/null 2>&1 || die "required command not found: $1"
+}
+
+prepare_dirs() {
+  install -d -m 0700 "$images_dir" "$backups_dir" "$state_dir"
+}
+
+machine_exists() {
+  smolvm machine status --name "$1" >/dev/null 2>&1
+}
+
+machine_state() {
+  smolvm machine status --name "$1" --json |
+    python3 -c 'import json,sys; print(json.load(sys.stdin)["state"])'
+}
+
+is_running() {
+  [[ $(machine_state "$1") == running ]]
+}
+
+clear_known_host() {
+  local port=$1
+  [[ -f $known_hosts ]] || return 0
+  ssh-keygen -f "$known_hosts" -R "[127.0.0.1]:$port" >/dev/null 2>&1 || true
+}
+
+wait_for_port() {
+  local port=$1
+  local attempts=${2:-60}
+  local i
+  for ((i = 0; i < attempts; i++)); do
+    if python3 - "$port" <<'PY'
+import socket
+import sys
+
+port = int(sys.argv[1])
+try:
+    with socket.create_connection(("127.0.0.1", port), timeout=0.25):
+        pass
+except OSError:
+    raise SystemExit(1)
+PY
+    then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+wait_for_ssh_banner() {
+  local port=$1
+  local attempts=${2:-240}
+  local i
+  for ((i = 0; i < attempts; i++)); do
+    if ssh-keyscan -T 1 -p "$port" 127.0.0.1 >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+verify_loopback_listener() {
+  local port=$1
+  local listeners endpoint found=false
+  listeners=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN 2>/dev/null | awk 'NR > 1 {print $9}')
+  [[ -n $listeners ]] || return 1
+
+  while IFS= read -r endpoint; do
+    [[ -n $endpoint ]] || continue
+    found=true
+    case "$endpoint" in
+      "127.0.0.1:$port" | "[::1]:$port") ;;
+      *)
+        log "unsafe listener detected: $endpoint"
+        return 1
+        ;;
+    esac
+  done <<<"$listeners"
+
+  [[ $found == true ]]
+}
+
+append_runtime_create_args() {
+  case "$network_mode" in
+    strict)
+      die "strict mode is unavailable: smolvm 1.0.4 hostname allowlists permit direct-IP and unlisted-host egress; explicitly select full networking to proceed"
+      ;;
+    full)
+      runtime_create_args+=(--net)
+      ;;
+    none)
+      die "no-egress mode is unavailable: smolvm 1.0.4 machine update --no-net and create --outbound-localhost-only still permit external traffic; explicitly select full networking to proceed"
+      ;;
+    *)
+      die "HERMES_BOX_NETWORK_MODE must be strict, full, or none"
+      ;;
+  esac
+
+  if [[ -f $secret_env_file ]]; then
+    while IFS= read -r line || [[ -n $line ]]; do
+      line=${line%%#*}
+      line=${line//[[:space:]]/}
+      [[ -n $line ]] && runtime_create_args+=(--secret-env "$line")
+    done <"$secret_env_file"
+  fi
+}
+
+validate_network_mode() {
+  case "$network_mode" in
+    full) ;;
+    none)
+      die "no-egress mode is unavailable: smolvm 1.0.4 machine update --no-net and create --outbound-localhost-only still permit external traffic; explicitly select full networking to proceed"
+      ;;
+    strict)
+      die "strict mode is unavailable: smolvm 1.0.4 hostname allowlists permit direct-IP and unlisted-host egress; explicitly select full networking to proceed"
+      ;;
+    *) die "HERMES_BOX_NETWORK_MODE must be strict, full, or none" ;;
+  esac
+}
+
+create_from_artifact() {
+  local name=$1
+  local artifact=$2
+  local port=$3
+  runtime_create_args=(
+    machine create
+    --name "$name"
+    --from "$artifact"
+    --cpus "$cpus"
+    --mem "$memory_mib"
+    --storage "$storage_gb"
+    --overlay "$overlay_gb"
+    -p "$port:22"
+  )
+
+  append_runtime_create_args
+  smolvm "${runtime_create_args[@]}"
+  smolvm machine update --name "$name" --net
+}
+
+create_blank_machine() {
+  local name=$1
+  local port=$2
+  [[ -f $base_artifact ]] ||
+    die "restore requires the local base artifact: $base_artifact"
+  create_from_artifact "$name" "$base_artifact" "$port"
+}
+
+start_named_machine() {
+  local name=$1
+  local port=$2
+
+  smolvm machine start --name "$name"
+  if ! wait_for_port "$port" || ! verify_loopback_listener "$port"; then
+    smolvm machine stop --name "$name" >/dev/null 2>&1 || true
+    die "SSH port $port was not a loopback-only listener; machine stopped"
+  fi
+  if ! wait_for_ssh_banner "$port"; then
+    smolvm machine stop --name "$name" >/dev/null 2>&1 || true
+    die "sshd did not become ready on loopback port $port; machine stopped"
+  fi
+}
+
+verify_guest() {
+  local name=$1
+  smolvm machine exec --name "$name" -- bash -lc '
+    set -e
+    test -d /workspace/hermes-home
+    test -w /workspace/hermes-home
+    test -f /workspace/hermes-home/config.yaml
+    test "$(stat -c %U /workspace/hermes-home)" = hermes
+    supervisorctl status sshd | grep -q RUNNING
+    supervisorctl status hermes | grep -q RUNNING
+    sudo -iu hermes env HERMES_HOME=/workspace/hermes-home hermes --version
+  '
+}
+
+wait_for_guest() {
+  local name=$1
+  local attempts=${2:-240}
+  local i
+  for ((i = 0; i < attempts; i++)); do
+    if verify_guest "$name" >/dev/null 2>&1; then
+      verify_guest "$name"
+      return 0
+    fi
+    sleep 0.5
+  done
+  return 1
+}
+
+stop_named_machine() {
+  local name=$1
+  if machine_exists "$name" && is_running "$name"; then
+    smolvm machine exec --name "$name" -- \
+      supervisorctl stop hermes >/dev/null 2>&1 || true
+    smolvm machine stop --name "$name"
+  fi
+}
+
+sanitize_label() {
+  printf '%s' "$1" |
+    tr '[:space:]' '-' |
+    tr -cd '[:alnum:]_.-'
+}
+
+snapshot_internal() {
+  local label=$1
+  local restart_after=${2:-false}
+  local stamp safe_label backup_dir was_running=false
+
+  machine_exists "$machine_name" || die "machine does not exist: $machine_name"
+  if is_running "$machine_name"; then
+    was_running=true
+  else
+    start_named_machine "$machine_name" "$ssh_port" >&2
+  fi
+
+  stamp=$(date +%Y%m%d-%H%M%S)
+  safe_label=$(sanitize_label "$label")
+  [[ -n $safe_label ]] || safe_label=snapshot
+  backup_dir=$backups_dir/$machine_name-$stamp-$safe_label.hermesbox
+  install -d -m 0700 "$backup_dir"
+
+  log "quiescing Hermes and archiving the merged root filesystem"
+  smolvm machine exec --name "$machine_name" -- \
+    supervisorctl stop all >/dev/null 2>&1 || true
+  smolvm machine exec --stream --name "$machine_name" -- bash -lc '
+    set -e
+    rm -f \
+      /workspace/.hermes-box-rootfs.tar.gz \
+      /tmp/hermes-box-workspace.tar.gz \
+      /tmp/hermes-box-snapshot-warnings.log
+    tar \
+      --one-file-system \
+      --ignore-failed-read \
+      --numeric-owner \
+      -C / \
+      -czpf /workspace/.hermes-box-rootfs.tar.gz \
+      --exclude=./workspace \
+      --exclude=./proc \
+      --exclude=./sys \
+      --exclude=./dev \
+      --exclude=./run \
+      --exclude=./storage \
+      --exclude=./packed_layers \
+      . 2>>/tmp/hermes-box-snapshot-warnings.log
+    tar \
+      --ignore-failed-read \
+      --numeric-owner \
+      -C /workspace \
+      -czpf /tmp/hermes-box-workspace.tar.gz \
+      --exclude=.hermes-box-rootfs.tar.gz \
+      . 2>>/tmp/hermes-box-snapshot-warnings.log
+    sync
+  ' >&2
+
+  smolvm machine cp \
+    "$machine_name:/workspace/.hermes-box-rootfs.tar.gz" \
+    "$backup_dir/rootfs.tar.gz" >&2
+  smolvm machine cp \
+    "$machine_name:/tmp/hermes-box-workspace.tar.gz" \
+    "$backup_dir/workspace.tar.gz" >&2
+  smolvm machine cp \
+    "$machine_name:/tmp/hermes-box-snapshot-warnings.log" \
+    "$backup_dir/snapshot-warnings.log" >&2
+  if [[ -s $backup_dir/snapshot-warnings.log ]]; then
+    if [[ $was_running == true ]]; then
+      smolvm machine exec --name "$machine_name" -- \
+        supervisorctl start all >/dev/null 2>&1 || true
+    else
+      smolvm machine stop --name "$machine_name" >/dev/null 2>&1 || true
+    fi
+    rm -rf "$backup_dir"
+    die "snapshot produced warnings; backup discarded"
+  fi
+  tar -tzf "$backup_dir/rootfs.tar.gz" |
+    LC_ALL=C sort >"$backup_dir/rootfs-files.txt"
+  smolvm machine exec --name "$machine_name" -- rm -f \
+    /workspace/.hermes-box-rootfs.tar.gz \
+    /tmp/hermes-box-workspace.tar.gz \
+    /tmp/hermes-box-snapshot-warnings.log >/dev/null
+  smolvm machine stop --name "$machine_name" >&2
+
+  {
+    printf 'format=hermes-box-v2\n'
+    printf 'created=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    printf 'machine=%s\n' "$machine_name"
+    printf 'smolvm=%s\n' "$(smolvm --version)"
+  } >"$backup_dir/manifest.txt"
+  (
+    cd "$backup_dir"
+    shasum -a 256 \
+      rootfs.tar.gz \
+      rootfs-files.txt \
+      workspace.tar.gz \
+      snapshot-warnings.log \
+      manifest.txt >SHA256SUMS
+  )
+  chmod 0600 "$backup_dir"/*
+
+  if [[ $restart_after == true && $was_running == true ]]; then
+    start_named_machine "$machine_name" "$ssh_port" >&2
+    wait_for_guest "$machine_name" >&2
+  fi
+
+  printf '%s\n' "$backup_dir"
+}
+
+find_free_port() {
+  python3 - <<'PY'
+import socket
+
+with socket.socket() as sock:
+    sock.bind(("127.0.0.1", 0))
+    print(sock.getsockname()[1])
+PY
+}
+
+verify_backup() {
+  local backup_dir=$1
+  [[ -d $backup_dir ]] || die "backup directory not found: $backup_dir"
+  [[ -f $backup_dir/rootfs.tar.gz ]] || die "rootfs archive is missing"
+  [[ -f $backup_dir/rootfs-files.txt ]] || die "rootfs manifest is missing"
+  [[ -f $backup_dir/workspace.tar.gz ]] || die "workspace archive is missing"
+  [[ -f $backup_dir/manifest.txt ]] || die "backup manifest is missing"
+  [[ -f $backup_dir/SHA256SUMS ]] || die "backup checksums are missing"
+  (cd "$backup_dir" && shasum -a 256 -c SHA256SUMS)
+}
+
+apply_backup() {
+  local name=$1
+  local backup_dir=$2
+  local port=$3
+
+  smolvm machine start --name "$name" >&2
+  smolvm machine exec --name "$name" -- \
+    supervisorctl stop all >/dev/null 2>&1 || true
+  smolvm machine cp \
+    "$backup_dir/rootfs.tar.gz" \
+    "$name:/tmp/hermes-box-restore-rootfs.tar.gz" >&2
+  smolvm machine cp \
+    "$backup_dir/rootfs-files.txt" \
+    "$name:/tmp/hermes-box-restore-rootfs-files.txt" >&2
+  smolvm machine cp \
+    "$backup_dir/workspace.tar.gz" \
+    "$name:/tmp/hermes-box-restore-workspace.tar.gz" >&2
+
+  smolvm machine exec --stream --name "$name" -- bash -lc '
+    set -e
+    rootfs=/tmp/hermes-box-restore-rootfs.tar.gz
+    rootfs_files=/tmp/hermes-box-restore-rootfs-files.txt
+    workspace=/tmp/hermes-box-restore-workspace.tar.gz
+    tar --numeric-owner -C / -xzpf "$rootfs"
+    python3 - "$rootfs_files" <<'"'"'PY'"'"'
+import os
+import shutil
+import sys
+
+excluded = {
+    "dev",
+    "packed_layers",
+    "proc",
+    "run",
+    "storage",
+    "sys",
+    "tmp",
+    "workspace",
+}
+with open(sys.argv[1], encoding="utf-8") as manifest:
+    archived = {
+        line.strip().removeprefix("./").rstrip("/")
+        for line in manifest
+        if line.strip() not in {".", "./"}
+    }
+
+for entry in os.scandir("/"):
+    if entry.name in excluded:
+        continue
+    root = entry.path
+    if entry.is_dir(follow_symlinks=False):
+        for current, directories, files in os.walk(
+            root, topdown=False, followlinks=False
+        ):
+            for name in files:
+                path = os.path.join(current, name)
+                relative = path.removeprefix("/")
+                if relative not in archived:
+                    os.unlink(path)
+            for name in directories:
+                path = os.path.join(current, name)
+                relative = path.removeprefix("/")
+                if relative not in archived:
+                    if os.path.islink(path):
+                        os.unlink(path)
+                    else:
+                        shutil.rmtree(path)
+        relative_root = root.removeprefix("/")
+        if relative_root not in archived:
+            shutil.rmtree(root)
+    elif entry.name not in archived:
+        os.unlink(root)
+PY
+    find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+    tar --numeric-owner -C /workspace -xzpf "$workspace"
+    rm -f "$rootfs" "$rootfs_files" "$workspace"
+    sync
+  ' >&2
+
+  smolvm machine stop --name "$name" >&2
+  start_named_machine "$name" "$port" >&2
+  wait_for_guest "$name" >&2
+}
+
+ensure_key() {
+  if [[ ! -f $ssh_key ]]; then
+    log "generating dedicated SSH key: $ssh_key"
+    ssh-keygen -q -t ed25519 -N '' -C "$machine_name" -f "$ssh_key"
+    chmod 0600 "$ssh_key"
+  fi
+}
+
+cmd_init() {
+  local bootstrap_remote=/tmp/hermes-box-bootstrap.sh
+  (($# == 0)) || die "init takes no arguments"
+  validate_network_mode
+
+  machine_exists "$machine_name" &&
+    die "runtime machine already exists: $machine_name"
+  machine_exists "$builder_name" &&
+    die "builder machine already exists: $builder_name"
+
+  prepare_dirs
+  ensure_key
+
+  log "creating temporary builder with unrestricted build-time networking"
+  smolvm machine create \
+    --name "$builder_name" \
+    --image ubuntu:24.04 \
+    --cpus "$cpus" \
+    --mem "$memory_mib" \
+    --storage "$storage_gb" \
+    --overlay "$overlay_gb" \
+    --net
+  smolvm machine start --name "$builder_name"
+
+  smolvm machine cp "$project_root/guest/bootstrap.sh" \
+    "$builder_name:$bootstrap_remote"
+  smolvm machine cp "$project_root/guest/start.sh" \
+    "$builder_name:/tmp/hermes-box-start.sh"
+  smolvm machine cp "$project_root/guest/boxadmin.bash_profile" \
+    "$builder_name:/tmp/hermes-box-boxadmin.bash_profile"
+  smolvm machine cp "$project_root/guest/supervisord.conf" \
+    "$builder_name:/tmp/hermes-box-supervisord.conf"
+  smolvm machine cp "$ssh_key.pub" \
+    "$builder_name:/tmp/hermes-box-authorized-key.pub"
+
+  smolvm machine exec --stream --name "$builder_name" \
+    -e "HERMES_INSTALL_COMMIT=$hermes_commit" -- \
+    bash "$bootstrap_remote" /tmp/hermes-box-authorized-key.pub
+
+  smolvm machine stop --name "$builder_name"
+  rm -f "$base_output" "$base_artifact"
+  smolvm pack create \
+    --from-vm "$builder_name" \
+    --smolfile "$project_root/Smolfile" \
+    --output "$base_output"
+  rm -f "$base_output"
+  chmod 0600 "$base_artifact"
+
+  create_from_artifact "$machine_name" "$base_artifact" "$ssh_port"
+  clear_known_host "$ssh_port"
+  start_named_machine "$machine_name" "$ssh_port"
+  wait_for_guest "$machine_name"
+  smolvm machine delete --name "$builder_name" --force
+
+  log "initialized and running"
+  log "next: $project_root/bin/hermes-box ssh"
+}
+
+cmd_start() {
+  (($# == 0)) || die "start takes no arguments"
+  machine_exists "$machine_name" || die "run init first"
+  if is_running "$machine_name"; then
+    verify_loopback_listener "$ssh_port" ||
+      die "running machine does not have a safe SSH listener"
+    log "already running"
+    return
+  fi
+  start_named_machine "$machine_name" "$ssh_port"
+  wait_for_guest "$machine_name"
+}
+
+cmd_stop() {
+  (($# == 0)) || die "stop takes no arguments"
+  machine_exists "$machine_name" || die "machine does not exist"
+  stop_named_machine "$machine_name"
+}
+
+cmd_restart() {
+  (($# == 0)) || die "restart takes no arguments"
+  cmd_stop
+  cmd_start
+}
+
+cmd_ssh() {
+  machine_exists "$machine_name" || die "run init first"
+  is_running "$machine_name" || cmd_start
+  exec ssh \
+    -i "$ssh_key" \
+    -p "$ssh_port" \
+    -o IdentitiesOnly=yes \
+    -o ForwardAgent=no \
+    -o StrictHostKeyChecking=accept-new \
+    -o "UserKnownHostsFile=$known_hosts" \
+    boxadmin@127.0.0.1 "$@"
+}
+
+cmd_shell() {
+  (($# == 0)) || die "shell takes no arguments"
+  machine_exists "$machine_name" || die "run init first"
+  exec smolvm machine shell --name "$machine_name"
+}
+
+cmd_status() {
+  (($# == 0)) || die "status takes no arguments"
+  machine_exists "$machine_name" || die "machine does not exist"
+  smolvm machine status --name "$machine_name" --json
+  if is_running "$machine_name"; then
+    verify_loopback_listener "$ssh_port" &&
+      log "SSH listener is loopback-only on port $ssh_port"
+    smolvm machine exec --name "$machine_name" -- supervisorctl status || true
+    smolvm machine exec --name "$machine_name" -- df -h /workspace || true
+  fi
+}
+
+cmd_logs() {
+  local follow=false
+  local lines=200
+  while (($#)); do
+    case "$1" in
+      -f | --follow) follow=true ;;
+      -n | --lines)
+        shift
+        (($#)) || die "--lines requires a line count"
+        lines=$1
+        ;;
+      *) die "unknown logs option: $1" ;;
+    esac
+    shift
+  done
+
+  machine_exists "$machine_name" || die "machine does not exist"
+  is_running "$machine_name" || die "machine is stopped"
+  [[ $lines =~ ^[1-9][0-9]*$ ]] || die "log line count must be a positive integer"
+
+  if [[ $follow == true ]]; then
+    exec smolvm machine exec --stream --name "$machine_name" -- \
+      tail -n "$lines" -F /workspace/hermes-home/logs/gateway.log
+  fi
+  smolvm machine exec --name "$machine_name" -- \
+    tail -n "$lines" /workspace/hermes-home/logs/gateway.log
+}
+
+cmd_snapshot() {
+  (($# <= 1)) || die "snapshot accepts at most one label"
+  local label=${1:-manual}
+  snapshot_internal "$label" true
+}
+
+cmd_restore() {
+  (($# == 1)) || die "restore requires one .hermesbox directory"
+  local backup_dir=$1
+  local candidate_name candidate_port safety_backup=
+
+  validate_network_mode
+  verify_backup "$backup_dir"
+  prepare_dirs
+
+  if machine_exists "$machine_name"; then
+    safety_backup=$(snapshot_internal pre-restore false)
+    log "safety snapshot: $safety_backup"
+  fi
+
+  candidate_name=$machine_name-restore-$$
+  candidate_port=$(find_free_port)
+  log "verifying restore candidate $candidate_name on port $candidate_port"
+  create_blank_machine "$candidate_name" "$candidate_port"
+  apply_backup "$candidate_name" "$backup_dir" "$candidate_port"
+  stop_named_machine "$candidate_name"
+  smolvm machine delete --name "$candidate_name" --force
+
+  if machine_exists "$machine_name"; then
+    smolvm machine delete --name "$machine_name" --force
+  fi
+
+  clear_known_host "$ssh_port"
+  if create_blank_machine "$machine_name" "$ssh_port" &&
+    apply_backup "$machine_name" "$backup_dir" "$ssh_port"; then
+    log "restore completed"
+    return
+  fi
+
+  log "final restore validation failed"
+  if [[ -n $safety_backup ]]; then
+    stop_named_machine "$machine_name" || true
+    machine_exists "$machine_name" &&
+      smolvm machine delete --name "$machine_name" --force
+    clear_known_host "$ssh_port"
+    create_blank_machine "$machine_name" "$ssh_port"
+    apply_backup "$machine_name" "$safety_backup" "$ssh_port"
+    die "restore failed; original machine was recreated from $safety_backup"
+  fi
+  die "restore failed and no original machine existed"
+}
+
+cmd_destroy() {
+  (($# == 1)) || die "destroy requires --force"
+  local force=${1:-}
+  if [[ $force != --force ]]; then
+    die "destroy requires --force; images and backups are retained"
+  fi
+  if machine_exists "$machine_name"; then
+    stop_named_machine "$machine_name"
+    smolvm machine delete --name "$machine_name" --force
+  fi
+  if machine_exists "$builder_name"; then
+    stop_named_machine "$builder_name"
+    smolvm machine delete --name "$builder_name" --force
+  fi
+  rm -f "$known_hosts"
+  log "machines destroyed; images, backups, and SSH key retained"
+}
+
+usage() {
+  cat <<EOF
+Usage: hermes-box COMMAND [ARGS]
+
+Commands:
+  init                     Build the base and create the runtime box
+  start                    Start and verify the box
+  stop                     Gracefully stop Hermes, then stop the box
+  restart                  Stop and start the box
+  ssh [COMMAND...]         SSH as boxadmin on 127.0.0.1:$ssh_port
+  shell                    Open the out-of-band root console
+  status                   Show VM, Supervisor, and workspace status
+  logs [-f] [-n LINES]     Show or follow Hermes gateway logs
+  snapshot [LABEL]         Archive rootfs + workspace, checksum, then resume
+  restore BACKUP           Verify in a temporary box, then restore safely
+  destroy --force          Delete VMs but retain keys, images, and backups
+  help                     Show this help
+EOF
+}
+
+main() {
+  need smolvm
+  need python3
+  need ssh
+  need ssh-keyscan
+  need ssh-keygen
+  need lsof
+  need shasum
+
+  local command=${1:-help}
+  shift || true
+  case "$command" in
+    init) cmd_init "$@" ;;
+    start) cmd_start "$@" ;;
+    stop) cmd_stop "$@" ;;
+    restart) cmd_restart "$@" ;;
+    ssh) cmd_ssh "$@" ;;
+    shell) cmd_shell "$@" ;;
+    status) cmd_status "$@" ;;
+    logs) cmd_logs "$@" ;;
+    snapshot) cmd_snapshot "$@" ;;
+    restore) cmd_restore "$@" ;;
+    destroy) cmd_destroy "$@" ;;
+    help | -h | --help) usage ;;
+    *) die "unknown command: $command" ;;
+  esac
+}
+
+main "$@"
