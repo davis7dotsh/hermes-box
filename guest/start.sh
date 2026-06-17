@@ -79,24 +79,7 @@ chown -h hermes:hermes /home/hermes/.hermes
 install -d -o root -g root -m 0755 /run/sshd
 ssh-keygen -A
 
-snapshot_dir=/var/lib/hermes-box
-snapshot_id_file=$snapshot_dir/workspace-snapshot.id
-snapshot_tar=$snapshot_dir/workspace-snapshot.tar
-workspace_id_file=/workspace/.hermes-box-snapshot-id
-
-if [[ -f $snapshot_id_file && -f $snapshot_tar ]]; then
-  expected_id=$(cat "$snapshot_id_file")
-  current_id=
-  if [[ -f $workspace_id_file ]]; then
-    current_id=$(cat "$workspace_id_file")
-  fi
-
-  if [[ $current_id != "$expected_id" ]]; then
-    find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-    tar -C /workspace -xpf "$snapshot_tar"
-    sync
-  fi
-fi
+/usr/local/sbin/hermes-box-workspace-seed
 
 chown hermes:hermes /workspace
 chmod 0750 /workspace

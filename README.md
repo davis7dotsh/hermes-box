@@ -52,8 +52,13 @@ The current implementation is tested with:
 Required host commands:
 
 ```text
-smolvm python3 ssh ssh-keyscan ssh-keygen lsof shasum
+go 1.24+ smolvm ssh ssh-keygen lsof
 ```
+
+The host CLI is written in Go. The small `bin/hermes-box` launcher builds a
+private cached binary under `state/` when the Go sources change, then executes
+it. Guest provisioning remains in Bash because it is native Ubuntu
+system-administration work.
 
 ## Quick Start
 
@@ -175,6 +180,8 @@ The wrapper:
 6. Restarts the machine if it was previously running.
 
 Snapshots are stored under `backups/*.hermesbox`.
+A completed snapshot is retained and its path is reported if restarting the
+machine afterward fails.
 
 Restore:
 
@@ -234,6 +241,13 @@ HERMES_BOX_NETWORK_MODE=full
 
 Explicit `HERMES_BOX_*` environment variables override the config file. This
 makes disposable test machines safe to run with different names and ports.
+Configuration files are parsed as assignments rather than executed as shell
+code. Plain, single-quoted, double-quoted, and optional `export` assignments are
+supported.
+
+Set `HERMES_BOX_DATA_DIR` to keep `images/`, `backups/`, and `state/` under a
+different directory. The disposable lifecycle suite uses a temporary data
+directory so it cannot replace primary recovery artifacts.
 
 Optional smolvm host-secret mappings can be placed in `secret-env.txt`; use
 `secret-env.txt.example` as the template.
@@ -246,40 +260,46 @@ Run static and syntax checks:
 ./tests/static.sh
 ```
 
+Run the complete local check suite:
+
+```bash
+make check
+```
+
 Run a disposable lifecycle test:
 
 ```bash
+HERMES_BOX_E2E=1 \
 HERMES_BOX_MACHINE_NAME=hermes-box-test \
 HERMES_BOX_BUILDER_NAME=hermes-builder-test \
 HERMES_BOX_SSH_PORT=2223 \
 HERMES_BOX_NETWORK_MODE=full \
-./bin/hermes-box init
-
-HERMES_BOX_MACHINE_NAME=hermes-box-test \
-HERMES_BOX_BUILDER_NAME=hermes-builder-test \
-HERMES_BOX_SSH_PORT=2223 \
-./bin/hermes-box status
-
-HERMES_BOX_MACHINE_NAME=hermes-box-test \
-HERMES_BOX_BUILDER_NAME=hermes-builder-test \
-HERMES_BOX_SSH_PORT=2223 \
-./bin/hermes-box destroy --force
+./tests/lifecycle.sh
 ```
 
 Never reuse the primary machine name, builder name, or SSH port for destructive
-tests.
+tests. The script creates and removes its own isolated data directory.
 
 ## Project Layout
 
 ```text
 hermes-box/
 ├── bin/hermes-box
+├── cmd/hermes-box/
+├── internal/
+│   ├── app/
+│   ├── config/
+│   └── process/
 ├── guest/
 │   ├── bootstrap.sh
 │   ├── boxadmin.bash_profile
+│   ├── restore.sh
+│   ├── snapshot.sh
 │   ├── start.sh
-│   └── supervisord.conf
+│   ├── supervisord.conf
+│   └── workspace-seed.sh
 ├── tests/
+├── Makefile
 ├── Smolfile
 ├── hermes-box.conf.example
 ├── network-hosts.txt
@@ -292,3 +312,6 @@ hermes-box/
 The browser and Node-based TUI payloads are intentionally removed from the
 base image to keep smolvm pack and restore operations reliable. Hermes CLI,
 inference, skills, messaging, gateway, and web-search tooling remain available.
+
+The Go CLI preserves the `hermes-box-v2` backup format and can restore snapshots
+created by the original Bash host wrapper.

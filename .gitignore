@@ -4,6 +4,7 @@ images/*
 state/*
 hermes-box.conf
 secret-env.txt
+dist/
 !backups/.gitkeep
 !images/.gitkeep
 !state/.gitkeep

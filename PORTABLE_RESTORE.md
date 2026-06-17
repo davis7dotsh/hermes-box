@@ -8,7 +8,8 @@ Requirements:
 
 - An ARM64 host supported by smolvm
 - smolvm 1.0.4
-- `python3`, `ssh`, `ssh-keyscan`, `ssh-keygen`, `lsof`, and `shasum`
+- Go 1.24 or newer
+- `shasum`, `ssh`, `ssh-keygen`, and `lsof`
 - Enough free space for a 15 GiB VM
 
 Restore:
@@ -34,3 +35,6 @@ shasum -a 256 -c hermes-box-portable-*.tar.sha256
 
 Keep the archive encrypted at rest. Possession of it grants access to the
 restored Hermes state and its dedicated SSH identity.
+
+The Go host CLI remains compatible with `hermes-box-v2` snapshot directories
+created by the earlier Bash wrapper.

@@ -83,6 +83,9 @@ chmod 0644 /etc/profile.d/hermes-box.sh
 
 install -o root -g root -m 0755 \
   /tmp/hermes-box-start.sh /usr/local/sbin/hermes-box-start
+install -o root -g root -m 0755 \
+  /tmp/hermes-box-workspace-seed.sh \
+  /usr/local/sbin/hermes-box-workspace-seed
 install -o root -g root -m 0644 \
   /tmp/hermes-box-supervisord.conf /etc/supervisor/supervisord.conf
 
