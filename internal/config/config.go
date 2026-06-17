@@ -17,7 +17,7 @@ const (
 	defaultMemoryMiB   = 8192
 	defaultStorageGB   = 15
 	defaultOverlayGB   = 6
-	defaultNetworkMode = "none"
+	defaultNetworkMode = "full"
 )
 
 type Config struct {

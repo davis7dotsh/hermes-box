@@ -115,6 +115,8 @@ func (a *App) Run(ctx context.Context, args []string) error {
 		return a.cmdLogs(ctx, args)
 	case "snapshot":
 		return a.withLock(func() error { return a.cmdSnapshot(ctx, args) })
+	case "package":
+		return a.withLock(func() error { return a.cmdPackage(ctx, args) })
 	case "restore":
 		return a.withLock(func() error { return a.cmdRestore(ctx, args) })
 	case "destroy":
@@ -191,6 +193,7 @@ Commands:
   status                   Show VM, Supervisor, and workspace status
   logs [-f] [-n LINES]     Show or follow Hermes gateway logs
   snapshot [LABEL]         Archive rootfs + workspace, checksum, then resume
+  package [LABEL]          Snapshot and create a portable restore archive
   restore BACKUP           Verify in a temporary box, then restore safely
   destroy --force          Delete VMs but retain keys, images, and backups
   help                     Show this help

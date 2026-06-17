@@ -70,12 +70,6 @@ cd hermes-box
 cp hermes-box.conf.example hermes-box.conf
 ```
 
-Edit `hermes-box.conf` and explicitly enable networking:
-
-```bash
-HERMES_BOX_NETWORK_MODE=full
-```
-
 Build the base image and start the runtime machine:
 
 ```bash
@@ -198,16 +192,44 @@ Keep `images/hermes-base.smolmachine` with your backups. Restore requires it.
 
 ## Portable Backups
 
-A portable copy should contain:
+Create a self-contained portable archive:
 
-- This repository
+```bash
+./bin/hermes-box package configured-agent
+```
+
+`package` takes a fresh consistent snapshot, then bundles:
+
+- The runnable Hermes Box project
 - `images/hermes-base.smolmachine`
-- The selected `backups/*.hermesbox` directory
-- `state/hermes-box-ed25519`
+- The new `backups/*.hermesbox` snapshot
+- The dedicated SSH private and public keys
+- A portable `hermes-box.conf` using repository-local data directories
+
+It writes both files under `backups/`:
+
+```text
+hermes-box-portable-YYYYMMDD-HHMMSS-configured-agent.tar
+hermes-box-portable-YYYYMMDD-HHMMSS-configured-agent.tar.sha256
+```
 
 These files include the machine SSH identity and may include Hermes OAuth
 tokens, API keys, sessions, memories, and generated work. Encrypt portable
-archives at rest. See [PORTABLE_RESTORE.md](PORTABLE_RESTORE.md).
+archives at rest.
+
+On another compatible host, install the prerequisites and restore without
+reconfiguring Hermes:
+
+```bash
+shasum -a 256 -c hermes-box-portable-*.tar.sha256
+tar -xpf hermes-box-portable-*.tar
+cd hermes-box
+./bin/hermes-box restore backups/*.hermesbox
+./bin/hermes-box status
+```
+
+Host environment variables referenced by an optional `secret-env.txt` must
+still exist on the restore host. See [PORTABLE_RESTORE.md](PORTABLE_RESTORE.md).
 
 ## Networking
 
