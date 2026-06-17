@@ -82,18 +82,21 @@ ssh-keygen -A
 snapshot_dir=/var/lib/hermes-box
 snapshot_id_file=$snapshot_dir/workspace-snapshot.id
 snapshot_tar=$snapshot_dir/workspace-snapshot.tar
-workspace_id_file=/workspace/.hermes-box-snapshot-id
+restored_id_file=$snapshot_dir/workspace-restored.id
 
 if [[ -f $snapshot_id_file && -f $snapshot_tar ]]; then
   expected_id=$(cat "$snapshot_id_file")
   current_id=
-  if [[ -f $workspace_id_file ]]; then
-    current_id=$(cat "$workspace_id_file")
+  if [[ -f $restored_id_file ]]; then
+    current_id=$(cat "$restored_id_file")
   fi
 
   if [[ $current_id != "$expected_id" ]]; then
     find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
     tar -C /workspace -xpf "$snapshot_tar"
+    printf '%s\n' "$expected_id" >"$restored_id_file"
+    chown root:root "$restored_id_file"
+    chmod 0600 "$restored_id_file"
     sync
   fi
 fi

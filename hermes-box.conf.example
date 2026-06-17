@@ -10,3 +10,6 @@ HERMES_BOX_NETWORK_MODE=none
 
 # Optional: pin the Hermes source install to a full Git commit.
 # HERMES_BOX_HERMES_COMMIT=
+
+# Optional: store images, backups, and runtime state outside the repository.
+# HERMES_BOX_DATA_DIR=
