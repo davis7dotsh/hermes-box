@@ -81,11 +81,50 @@ ssh-keygen -A
 
 /usr/local/sbin/hermes-box-workspace-seed
 
+codex_home=/workspace/codex-home
 chown hermes:hermes /workspace
 chmod 0750 /workspace
 install -d -o hermes -g hermes -m 0700 /workspace/hermes-home
 install -d -o hermes -g hermes -m 0750 /workspace/hermes-home/logs
+install -d -o hermes -g hermes -m 0700 "$codex_home"
+install -d -o hermes -g hermes -m 0750 "$codex_home/bin"
 install -d -o hermes -g hermes -m 0750 /workspace/work
+
+codex_config=$codex_home/config.toml
+if [[ ! -f $codex_config ]]; then
+  cat >"$codex_config" <<'EOF'
+# Hermes Box is the outer sandbox, so Codex runs autonomously inside the VM.
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+# The guest has no desktop keyring. Keep the login cache with the rest of the
+# private Codex state under /workspace so snapshots preserve refreshed tokens.
+cli_auth_credentials_store = "file"
+
+[projects."/workspace/work"]
+trust_level = "trusted"
+EOF
+fi
+chown hermes:hermes "$codex_config"
+chmod 0600 "$codex_config"
+
+# Install on the first runtime boot instead of embedding the standalone package
+# in the base image. Its large workspace payload makes smolvm 1.0.4 pack
+# artifacts unreliable. The install is user-owned and persists in /workspace,
+# so subsequent boots are local and `codex update` needs no sudo access.
+if [[ ! -x $codex_home/bin/codex ]]; then
+  curl -fsSL --retry 3 \
+    https://chatgpt.com/codex/install.sh \
+    -o /tmp/codex-install.sh
+  chmod 0755 /tmp/codex-install.sh
+  sudo -u hermes env \
+    HOME=/home/hermes \
+    CODEX_HOME="$codex_home" \
+    CODEX_INSTALL_DIR="$codex_home/bin" \
+    CODEX_NON_INTERACTIVE=1 \
+    /tmp/codex-install.sh
+fi
+sudo -iu hermes codex --strict-config --version
 
 hermes_env=/workspace/hermes-home/.env
 touch "$hermes_env"

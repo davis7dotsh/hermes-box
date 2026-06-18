@@ -154,10 +154,15 @@ set -e
 test -d /workspace/hermes-home
 test -w /workspace/hermes-home
 test -f /workspace/hermes-home/config.yaml
+test -d /workspace/codex-home
+test -w /workspace/codex-home
+test -f /workspace/codex-home/config.toml
 test "$(stat -c %U /workspace/hermes-home)" = hermes
+test "$(stat -c %U /workspace/codex-home)" = hermes
 supervisorctl status sshd | grep -q RUNNING
 supervisorctl status hermes | grep -q RUNNING
 sudo -iu hermes env HERMES_HOME=/workspace/hermes-home hermes --version
+sudo -iu hermes codex --strict-config --version
 `
 	return a.runQuiet(
 		ctx,

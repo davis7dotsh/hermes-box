@@ -46,6 +46,13 @@ grep -Fq "hermes-gateway.log" internal/app/lifecycle.go
 grep -Fq "BatchMode=yes" internal/app/host.go
 grep -Fq 'user=hermes' guest/supervisord.conf
 grep -Fq 'HERMES_HOME="/workspace/hermes-home"' guest/supervisord.conf
+grep -Fq 'CODEX_HOME=/workspace/codex-home' guest/bootstrap.sh
+grep -Fq 'CODEX_INSTALL_DIR=$CODEX_HOME/bin' guest/bootstrap.sh
+grep -Fq 'approval_policy = "never"' guest/bootstrap.sh
+grep -Fq 'sandbox_mode = "danger-full-access"' guest/bootstrap.sh
+grep -Fq 'trust_level = "trusted"' guest/bootstrap.sh
+grep -Fq 'https://chatgpt.com/codex/install.sh' guest/start.sh
+grep -Fq 'codex --strict-config --version' internal/app/host.go
 
 ./tests/workspace-seed.sh
 

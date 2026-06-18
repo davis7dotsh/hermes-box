@@ -14,11 +14,13 @@ machine regardless of what happens inside it.
 Ubuntu 24.04 VM
 ├── boxadmin                 Key-only SSH entry account
 ├── hermes                   Unprivileged agent account, no sudo
+├── codex                    Interactive Codex CLI/TUI, full access inside VM
 ├── sshd                     Bound to host loopback only
 ├── supervisord
 │   └── hermes gateway run
 └── /workspace               Private persistent disk
     ├── hermes-home/         Auth, config, sessions, memory, skills, logs
+    ├── codex-home/          Codex binary, auth, config, sessions, skills, logs
     └── work/                Hermes working directory
 ```
 
@@ -129,6 +131,36 @@ hermes
 
 Hermes authentication and configuration live entirely inside
 `/workspace/hermes-home`.
+
+## Configure Codex
+
+Codex is installed with its official standalone installer, including the
+interactive TUI. Open the box and sign in using the device flow:
+
+```bash
+./bin/hermes-box ssh
+codex login --device-auth
+codex
+```
+
+Codex defaults to `approval_policy = "never"` and
+`sandbox_mode = "danger-full-access"`. This is the persistent equivalent of
+`--yolo`: Codex can autonomously read, write, execute, and use the network
+inside the VM, while the Hermes Box boundary still isolates it from the host.
+The default `/workspace/work` directory is pre-trusted. The `hermes` account
+remains unprivileged and has no `sudo` access.
+
+Codex's executable, login cache, configuration, sessions, and update metadata
+live under `/workspace/codex-home`, so snapshots preserve them together. Update
+the standalone installation as the `hermes` user:
+
+```bash
+codex update
+codex --version
+```
+
+The login cache is stored as `/workspace/codex-home/auth.json`. Treat snapshots
+and portable packages as credentials after signing in.
 
 ## Daily Commands
 
@@ -291,11 +323,11 @@ hermes-box/
 │   ├── config/
 │   └── process/
 ├── guest/
-│   ├── bootstrap.sh
+│   ├── bootstrap.sh          Installs Hermes and seeds persistent state
 │   ├── boxadmin.bash_profile
 │   ├── restore.sh
 │   ├── snapshot.sh
-│   ├── start.sh
+│   ├── start.sh              Installs Codex once, then starts services
 │   ├── supervisord.conf
 │   └── workspace-seed.sh
 ├── tests/
@@ -309,9 +341,11 @@ hermes-box/
 └── state/
 ```
 
-The browser and Node-based TUI payloads are intentionally removed from the
-base image to keep smolvm pack and restore operations reliable. Hermes CLI,
-inference, skills, messaging, gateway, and web-search tooling remain available.
+The Hermes browser and Node-based Hermes TUI payloads are intentionally removed
+from the base image to keep smolvm pack and restore operations reliable. The
+native Codex TUI is installed into the persistent workspace on first boot.
+Hermes CLI, inference, skills, messaging, gateway, and web-search tooling remain
+available.
 
 The Go CLI preserves the `hermes-box-v2` backup format and can restore snapshots
 created by the original Bash host wrapper.

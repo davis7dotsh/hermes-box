@@ -8,6 +8,7 @@ fi
 
 public_key_file=${1:?public key file is required}
 hermes_home=/workspace/hermes-home
+codex_home=/workspace/codex-home
 
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
@@ -68,6 +69,8 @@ chown hermes:hermes /workspace
 chmod 0750 /workspace
 install -d -o hermes -g hermes -m 0700 "$hermes_home"
 install -d -o hermes -g hermes -m 0750 "$hermes_home/logs"
+install -d -o hermes -g hermes -m 0700 "$codex_home"
+install -d -o hermes -g hermes -m 0750 "$codex_home/bin"
 install -d -o hermes -g hermes -m 0750 /workspace/work
 
 rm -rf /home/hermes/.hermes
@@ -76,7 +79,9 @@ chown -h hermes:hermes /home/hermes/.hermes
 
 cat >/etc/profile.d/hermes-box.sh <<'EOF'
 export HERMES_HOME=/workspace/hermes-home
-export PATH=/usr/local/bin:$PATH
+export CODEX_HOME=/workspace/codex-home
+export CODEX_INSTALL_DIR=$CODEX_HOME/bin
+export PATH=$CODEX_HOME/bin:/usr/local/bin:$PATH
 cd /workspace/work 2>/dev/null || true
 EOF
 chmod 0644 /etc/profile.d/hermes-box.sh
@@ -104,6 +109,21 @@ if [[ -n ${HERMES_INSTALL_COMMIT:-} ]]; then
 fi
 
 HERMES_HOME="$hermes_home" /tmp/hermes-install.sh "${installer_args[@]}"
+
+cat >"$codex_home/config.toml" <<'EOF'
+# Hermes Box is the outer sandbox, so Codex runs autonomously inside the VM.
+approval_policy = "never"
+sandbox_mode = "danger-full-access"
+
+# The guest has no desktop keyring. Keep the login cache with the rest of the
+# private Codex state under /workspace so snapshots preserve refreshed tokens.
+cli_auth_credentials_store = "file"
+
+[projects."/workspace/work"]
+trust_level = "trusted"
+EOF
+chown hermes:hermes "$codex_home/config.toml"
+chmod 0600 "$codex_home/config.toml"
 
 # Hermes 0.16.0 defaults small Codex requests to a 12-second gap between SSE
 # events. Reasoning models can legitimately stay quiet longer than that.
@@ -134,7 +154,7 @@ if [[ -d /usr/local/lib/hermes-agent/venv ]]; then
   chown -R hermes:hermes /usr/local/lib/hermes-agent/venv
 fi
 
-chown -R hermes:hermes "$hermes_home" /workspace/work
+chown -R hermes:hermes "$hermes_home" "$codex_home" /workspace/work
 sudo -iu hermes env HERMES_HOME="$hermes_home" hermes --version
 
 install -d -m 0755 /run/sshd
