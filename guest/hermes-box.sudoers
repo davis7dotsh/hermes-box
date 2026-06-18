@@ -1,0 +1,3 @@
+Defaults:boxadmin !authenticate
+boxadmin ALL=(hermes) NOPASSWD: ALL
+hermes ALL=(ALL:ALL) NOPASSWD: ALL

@@ -13,8 +13,10 @@ machine regardless of what happens inside it.
 ```text
 Ubuntu 24.04 VM
 ├── boxadmin                 Key-only SSH entry account
-├── hermes                   Unprivileged agent account, no sudo
+├── hermes                   Agent account with passwordless full sudo
 ├── codex                    Interactive Codex CLI/TUI, full access inside VM
+├── node + npm               Current Node.js 24 LTS toolchain
+├── tmux                     Persistent terminal sessions for Codex and Hermes
 ├── sshd                     Bound to host loopback only
 ├── supervisord
 │   └── hermes gateway run
@@ -35,7 +37,7 @@ predictable.
 - SSH accepts only the generated project key.
 - Root login, passwords, forwarding, tunnels, and X11 are disabled.
 - SSH is published only on `127.0.0.1`/`::1`; startup aborts otherwise.
-- Hermes has no `sudo` access.
+- Hermes has passwordless full `sudo` inside the isolated VM.
 - Host root recovery remains available through `./bin/hermes-box shell`.
 - Snapshots contain the full VM and may contain credentials.
 
@@ -129,6 +131,31 @@ hermes tools
 hermes
 ```
 
+Keep an interactive session alive across SSH disconnects:
+
+```bash
+tmux new -As codex
+codex
+```
+
+Detach with `Ctrl-b`, then `d`. Reconnect and run `tmux new -As codex` again
+to reattach to the same session.
+
+The messaging gateway is managed by Supervisor because Hermes Box does not
+boot systemd. After changing Discord or other gateway configuration, reload it
+with:
+
+```bash
+sudo supervisorctl restart hermes
+sudo supervisorctl status hermes
+cat /workspace/hermes-home/gateway_state.json
+```
+
+Do not run `hermes gateway install` or `hermes gateway start` in the box. The
+upstream `hermes gateway status` command checks systemd and may label the
+Supervisor-managed process as manual even when it is healthy. Supervisor,
+`gateway_state.json`, and the gateway log are authoritative.
+
 Hermes authentication and configuration live entirely inside
 `/workspace/hermes-home`.
 
@@ -148,7 +175,8 @@ Codex defaults to `approval_policy = "never"` and
 `--yolo`: Codex can autonomously read, write, execute, and use the network
 inside the VM, while the Hermes Box boundary still isolates it from the host.
 The default `/workspace/work` directory is pre-trusted. The `hermes` account
-remains unprivileged and has no `sudo` access.
+has passwordless full `sudo` inside the VM; the smolvm boundary protects the
+host rather than restricting the agent within its box.
 
 Codex's executable, login cache, configuration, sessions, and update metadata
 live under `/workspace/codex-home`, so snapshots preserve them together. Update
@@ -325,6 +353,8 @@ hermes-box/
 ├── guest/
 │   ├── bootstrap.sh          Installs Hermes and seeds persistent state
 │   ├── boxadmin.bash_profile
+│   ├── hermes-box.sudoers    Grants the agent full passwordless sudo
+│   ├── install-node.sh       Installs the latest checksum-verified Node 24 LTS
 │   ├── restore.sh
 │   ├── snapshot.sh
 │   ├── start.sh              Installs Codex once, then starts services

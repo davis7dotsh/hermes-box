@@ -1,0 +1,76 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $EUID -ne 0 ]]; then
+  echo "Node installer must run as root" >&2
+  exit 1
+fi
+
+node_major=${1:-24}
+if [[ ! $node_major =~ ^[0-9]+$ ]]; then
+  echo "Node major version must be numeric" >&2
+  exit 1
+fi
+
+case $(uname -m) in
+  aarch64 | arm64)
+    node_arch=arm64
+    ;;
+  *)
+    echo "unsupported Node architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+
+temporary_dir=$(mktemp -d /tmp/hermes-box-node.XXXXXX)
+trap 'rm -rf -- "$temporary_dir"' EXIT
+
+release_url=https://nodejs.org/dist/latest-v${node_major}.x
+curl -fsSL --retry 3 "$release_url/SHASUMS256.txt" \
+  -o "$temporary_dir/SHASUMS256.txt"
+
+node_archive=$(
+  awk -v major="$node_major" -v arch="$node_arch" '
+    $2 ~ ("^node-v" major "\\.[0-9]+\\.[0-9]+-linux-" arch "\\.tar\\.xz$") {
+      print $2
+      exit
+    }
+  ' "$temporary_dir/SHASUMS256.txt"
+)
+if [[ -z $node_archive ]]; then
+  echo "could not find the latest Node ${node_major} archive" >&2
+  exit 1
+fi
+
+curl -fsSL --retry 3 "$release_url/$node_archive" \
+  -o "$temporary_dir/$node_archive"
+(
+  cd "$temporary_dir"
+  grep -F "  $node_archive" SHASUMS256.txt | sha256sum --check --strict -
+)
+
+install_dir=/usr/local/lib/nodejs/node-v${node_major}
+rm -rf "$install_dir"
+install -d -o root -g root -m 0755 "$install_dir"
+tar -xJf "$temporary_dir/$node_archive" \
+  --strip-components=1 \
+  -C "$install_dir"
+
+for command in node npm npx corepack; do
+  if [[ -e $install_dir/bin/$command ]]; then
+    ln -sfn "$install_dir/bin/$command" "/usr/local/bin/$command"
+  fi
+done
+
+if id hermes >/dev/null 2>&1; then
+  install -d -o hermes -g hermes -m 0750 /home/hermes/.local/bin
+  for command in node npm npx corepack; do
+    if [[ -e /usr/local/bin/$command ]]; then
+      ln -sfn "/usr/local/bin/$command" "/home/hermes/.local/bin/$command"
+      chown -h hermes:hermes "/home/hermes/.local/bin/$command"
+    fi
+  done
+fi
+
+node --version
+npm --version

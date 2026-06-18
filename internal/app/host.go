@@ -162,6 +162,10 @@ test "$(stat -c %U /workspace/codex-home)" = hermes
 supervisorctl status sshd | grep -q RUNNING
 supervisorctl status hermes | grep -q RUNNING
 sudo -iu hermes env HERMES_HOME=/workspace/hermes-home hermes --version
+sudo -iu hermes /usr/local/lib/hermes-agent/venv/bin/python -c 'import discord'
+sudo -iu hermes node --version
+sudo -iu hermes npm --version
+sudo -iu hermes tmux -V
 sudo -iu hermes codex --strict-config --version
 `
 	return a.runQuiet(
