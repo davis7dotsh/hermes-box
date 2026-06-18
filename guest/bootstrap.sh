@@ -22,6 +22,7 @@ apt-get install -y --no-install-recommends \
   ripgrep \
   sudo \
   supervisor \
+  tmux \
   xz-utils
 
 if ! id boxadmin >/dev/null 2>&1; then
@@ -32,6 +33,11 @@ if ! id hermes >/dev/null 2>&1; then
 fi
 passwd --delete boxadmin
 passwd --lock hermes
+
+install -o root -g root -m 0755 \
+  /tmp/hermes-box-install-node.sh \
+  /usr/local/sbin/hermes-box-install-node
+/usr/local/sbin/hermes-box-install-node 24
 
 install -d -o boxadmin -g boxadmin -m 0700 /home/boxadmin/.ssh
 install -o boxadmin -g boxadmin -m 0600 \
@@ -58,11 +64,8 @@ PermitTunnel no
 PermitUserEnvironment no
 EOF
 
-cat >/etc/sudoers.d/hermes-box <<'EOF'
-Defaults:boxadmin !authenticate
-boxadmin ALL=(hermes) NOPASSWD: ALL
-EOF
-chmod 0440 /etc/sudoers.d/hermes-box
+install -o root -g root -m 0440 \
+  /tmp/hermes-box-sudoers /etc/sudoers.d/hermes-box
 visudo --check
 
 chown hermes:hermes /workspace
@@ -148,14 +151,39 @@ rm -rf \
   /usr/local/lib/hermes-agent/website \
   "$hermes_home/node"
 
+# The Hermes installer may create user-local Node links. Keep them pointed at
+# the checksum-verified system Node after its private download is removed.
+for command in node npm npx corepack; do
+  if [[ -e /usr/local/bin/$command ]]; then
+    ln -sfn "/usr/local/bin/$command" "/home/hermes/.local/bin/$command"
+    chown -h hermes:hermes "/home/hermes/.local/bin/$command"
+  fi
+done
+
 # Keep the source checkout root-owned, but allow Hermes to lazy-install optional
 # Python dependencies into its own virtual environment.
 if [[ -d /usr/local/lib/hermes-agent/venv ]]; then
-  chown -R hermes:hermes /usr/local/lib/hermes-agent/venv
+  chown -hR hermes:hermes /usr/local/lib/hermes-agent/venv
 fi
+
+# Gateway adapters are optional upstream dependencies. Install the supported
+# messaging set without rebuilding the root-owned Hermes source checkout.
+sudo -u hermes env \
+  HOME=/home/hermes \
+  HERMES_HOME="$hermes_home" \
+  "$hermes_home/bin/uv" pip install \
+  --no-cache \
+  --link-mode=copy \
+  --python /usr/local/lib/hermes-agent/venv/bin/python \
+  --requirements /usr/local/lib/hermes-agent/pyproject.toml \
+  --extra messaging
 
 chown -R hermes:hermes "$hermes_home" "$codex_home" /workspace/work
 sudo -iu hermes env HERMES_HOME="$hermes_home" hermes --version
+sudo -iu hermes /usr/local/lib/hermes-agent/venv/bin/python -c 'import discord'
+sudo -iu hermes node --version
+sudo -iu hermes npm --version
+sudo -iu hermes tmux -V
 
 install -d -m 0755 /run/sshd
 ssh-keygen -A

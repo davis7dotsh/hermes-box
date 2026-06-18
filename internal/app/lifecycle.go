@@ -58,9 +58,11 @@ func (a *App) cmdInit(ctx context.Context, args []string) error {
 
 	files := [][2]string{
 		{filepath.Join(a.root, "guest", "bootstrap.sh"), "/tmp/hermes-box-bootstrap.sh"},
+		{filepath.Join(a.root, "guest", "install-node.sh"), "/tmp/hermes-box-install-node.sh"},
 		{filepath.Join(a.root, "guest", "start.sh"), "/tmp/hermes-box-start.sh"},
 		{filepath.Join(a.root, "guest", "workspace-seed.sh"), "/tmp/hermes-box-workspace-seed.sh"},
 		{filepath.Join(a.root, "guest", "boxadmin.bash_profile"), "/tmp/hermes-box-boxadmin.bash_profile"},
+		{filepath.Join(a.root, "guest", "hermes-box.sudoers"), "/tmp/hermes-box-sudoers"},
 		{filepath.Join(a.root, "guest", "supervisord.conf"), "/tmp/hermes-box-supervisord.conf"},
 		{a.sshKey + ".pub", "/tmp/hermes-box-authorized-key.pub"},
 	}

@@ -34,6 +34,19 @@ fi
 if ! id sshd >/dev/null 2>&1; then
   useradd --system --home-dir /run/sshd --shell /usr/sbin/nologin sshd
 fi
+# smolvm can remap the builder-owned virtualenv while packing. Hermes needs
+# write access so optional provider and gateway dependencies can be installed.
+if [[ -d /usr/local/lib/hermes-agent/venv ]]; then
+  chown -hR hermes:hermes /usr/local/lib/hermes-agent/venv
+fi
+# The packed root can retain dpkg's D-Bus helper override while losing the
+# corresponding system group. Recreate it so later apt installs do not abort.
+if [[ -f /var/lib/dpkg/statoverride ]] &&
+  grep -Eq '^[^[:space:]]+[[:space:]]+messagebus[[:space:]]+' \
+    /var/lib/dpkg/statoverride &&
+  ! getent group messagebus >/dev/null; then
+  groupadd --system messagebus
+fi
 passwd --delete boxadmin
 passwd --lock hermes
 
