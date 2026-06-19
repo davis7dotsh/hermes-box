@@ -8,8 +8,16 @@ HERMES_BOX_STORAGE_GB=15
 HERMES_BOX_OVERLAY_GB=6
 HERMES_BOX_NETWORK_MODE=none
 
-# Optional: pin the Hermes source install to a full Git commit.
-# HERMES_BOX_HERMES_COMMIT=
+# Optional native Executor gateway pulled from a digest-pinned OCI image and
+# exposed on host loopback only.
+HERMES_BOX_EXECUTOR_ENABLED=false
+HERMES_BOX_EXECUTOR_PORT=4788
+HERMES_BOX_EXECUTOR_IMAGE=ghcr.io/rhyssullivan/executor-selfhost:v1.5.12@sha256:e40b2179c005b3124e794e9a8505341db46d0a9a1631e7f3fdcd023462ecf70b
+
+# The gated-approval source patch is reviewed against this exact Hermes 0.16.0
+# revision. Changing it intentionally fails provisioning until the patch and
+# its upstream anchors are reviewed for the new revision.
+HERMES_BOX_HERMES_COMMIT=81eaedd0f5c471c7ee748990066135a684f3c962
 
 # Optional: store images, backups, and runtime state outside the repository.
 # HERMES_BOX_DATA_DIR=

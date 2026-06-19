@@ -48,11 +48,21 @@ func (a *App) cmdInit(ctx context.Context, args []string) error {
 		"--storage", strconv.Itoa(a.config.StorageGB),
 		"--overlay", strconv.Itoa(a.config.OverlayGB),
 		"--net",
+		"--net-backend", "virtio-net",
 	); err != nil {
 		return err
 	}
 	builderCreated = true
+	// smolvm 1.0.4 can record network=true from machine create --net while
+	// booting the guest without a NIC. Reapply the setting before the first
+	// boot, as the runtime creation path already does.
+	if err := a.run(ctx, "smolvm", "machine", "update", "--name", a.config.BuilderName, "--net"); err != nil {
+		return err
+	}
 	if err := a.run(ctx, "smolvm", "machine", "start", "--name", a.config.BuilderName); err != nil {
+		return err
+	}
+	if err := a.ensureBuilderNetwork(ctx, a.config.BuilderName); err != nil {
 		return err
 	}
 
@@ -60,6 +70,11 @@ func (a *App) cmdInit(ctx context.Context, args []string) error {
 		{filepath.Join(a.root, "guest", "bootstrap.sh"), "/tmp/hermes-box-bootstrap.sh"},
 		{filepath.Join(a.root, "guest", "install-node.sh"), "/tmp/hermes-box-install-node.sh"},
 		{filepath.Join(a.root, "guest", "start.sh"), "/tmp/hermes-box-start.sh"},
+		{filepath.Join(a.root, "guest", "executor.sh"), "/tmp/hermes-box-executor.sh"},
+		{filepath.Join(a.root, "guest", "extract-executor.py"), "/tmp/hermes-box-extract-executor.py"},
+		{filepath.Join(a.root, "guest", "hermes_gated_approval.py"), "/tmp/hermes-box-hermes-gated-approval.py"},
+		{filepath.Join(a.root, "guest", "patch-hermes-gated-approval.py"), "/tmp/hermes-box-patch-hermes-gated-approval.py"},
+		{filepath.Join(a.root, "tests", "hermes-gated-approval.py"), "/tmp/hermes-box-test-hermes-gated-approval.py"},
 		{filepath.Join(a.root, "guest", "workspace-seed.sh"), "/tmp/hermes-box-workspace-seed.sh"},
 		{filepath.Join(a.root, "guest", "boxadmin.bash_profile"), "/tmp/hermes-box-boxadmin.bash_profile"},
 		{filepath.Join(a.root, "guest", "hermes-box.sudoers"), "/tmp/hermes-box-sudoers"},
@@ -149,6 +164,14 @@ func (a *App) cmdStart(ctx context.Context, args []string) error {
 		}
 		if err := a.verifySSH(ctx, a.config.SSHPort); err != nil {
 			return err
+		}
+		if a.config.ExecutorEnabled {
+			if err := a.verifyLoopbackListener(ctx, a.config.ExecutorPort); err != nil {
+				return fmt.Errorf("running machine does not have a safe Executor listener: %w", err)
+			}
+			if err := a.verifyExecutorHTTP(ctx); err != nil {
+				return err
+			}
 		}
 		a.log("already running")
 		return nil
@@ -242,6 +265,15 @@ func (a *App) cmdStatus(ctx context.Context, args []string) error {
 		a.log("SSH listener is loopback-only on port %d", a.config.SSHPort)
 	} else {
 		return err
+	}
+	if a.config.ExecutorEnabled {
+		if err := a.verifyLoopbackListener(ctx, a.config.ExecutorPort); err != nil {
+			a.log("Executor listener is unavailable or unsafe on port %d: %v", a.config.ExecutorPort, err)
+		} else if err := a.verifyExecutorHTTP(ctx); err != nil {
+			a.log("Executor health check failed on http://localhost:%d: %v", a.config.ExecutorPort, err)
+		} else {
+			a.log("Executor is healthy on http://localhost:%d", a.config.ExecutorPort)
+		}
 	}
 	_ = a.run(ctx, "smolvm", "machine", "exec", "--name", a.config.MachineName, "--", "supervisorctl", "status")
 	_ = a.run(ctx, "smolvm", "machine", "exec", "--name", a.config.MachineName, "--", "df", "-h", "/workspace")

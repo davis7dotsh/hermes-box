@@ -9,9 +9,31 @@ fi
 public_key_file=${1:?public key file is required}
 hermes_home=/workspace/hermes-home
 codex_home=/workspace/codex-home
+supported_hermes_commit=81eaedd0f5c471c7ee748990066135a684f3c962
+hermes_installer_sha256=dbd9d555ed4ac67bd1fc71ba6a39b410cf2af0ebcfd8f4889e086af78c9ddcaa
+uv_version=0.11.21
+uv_archive_sha256=88e800834007cc5efd4675f166eb2a51e7e3ad19876d85fa8805a6fb5c922397
 
 export DEBIAN_FRONTEND=noninteractive
-apt-get update
+cat >/etc/apt/apt.conf.d/80-hermes-box-network <<'EOF'
+Acquire::ForceIPv4 "true";
+Acquire::Retries "5";
+EOF
+
+apt_ready=false
+for attempt in {1..12}; do
+  if apt-get update -o APT::Update::Error-Mode=any; then
+    apt_ready=true
+    break
+  fi
+  printf 'apt index refresh failed (attempt %d/12); retrying in 5 seconds\n' \
+    "$attempt" >&2
+  sleep 5
+done
+if [[ $apt_ready != true ]]; then
+  printf 'apt index refresh failed after 12 attempts\n' >&2
+  exit 1
+fi
 apt-get install -y --no-install-recommends \
   bash \
   ca-certificates \
@@ -19,7 +41,9 @@ apt-get install -y --no-install-recommends \
   git \
   openssh-server \
   procps \
+  python3 \
   ripgrep \
+  skopeo \
   sudo \
   supervisor \
   tmux \
@@ -92,14 +116,52 @@ chmod 0644 /etc/profile.d/hermes-box.sh
 install -o root -g root -m 0755 \
   /tmp/hermes-box-start.sh /usr/local/sbin/hermes-box-start
 install -o root -g root -m 0755 \
+  /tmp/hermes-box-executor.sh /usr/local/sbin/hermes-box-executor
+install -o root -g root -m 0755 \
+  /tmp/hermes-box-extract-executor.py \
+  /usr/local/sbin/hermes-box-extract-executor
+install -o root -g root -m 0755 \
   /tmp/hermes-box-workspace-seed.sh \
   /usr/local/sbin/hermes-box-workspace-seed
 install -o root -g root -m 0644 \
   /tmp/hermes-box-supervisord.conf /etc/supervisor/supervisord.conf
 
+if [[ ${HERMES_INSTALL_COMMIT:-} != "$supported_hermes_commit" ]]; then
+  printf 'unsupported Hermes commit for pinned installer: %s\n' \
+    "${HERMES_INSTALL_COMMIT:-<unset>}" >&2
+  exit 1
+fi
+
+# The upstream installer deliberately reuses a managed uv binary when one is
+# already present. Pin that binary to the last version proven on smolvm 1.0.4:
+# uv 0.11.22 reproducibly deadlocks while building the editable Hermes project.
+# Downloading the release archive directly and verifying its reviewed digest
+# keeps fresh image creation independent of whichever uv release is newest.
+uv_archive=/tmp/hermes-box-uv.tar.gz
+uv_extract=/tmp/hermes-box-uv
+rm -rf -- "$uv_archive" "$uv_extract"
+curl --proto '=https' --tlsv1.2 -fsSL --retry 3 \
+  "https://github.com/astral-sh/uv/releases/download/$uv_version/uv-aarch64-unknown-linux-gnu.tar.gz" \
+  -o "$uv_archive"
+printf '%s  %s\n' "$uv_archive_sha256" "$uv_archive" |
+  sha256sum --check --status
+mkdir -p "$uv_extract"
+tar -xzf "$uv_archive" --no-same-owner -C "$uv_extract"
+install -d -o hermes -g hermes -m 0750 "$hermes_home/bin"
+install -o hermes -g hermes -m 0755 \
+  "$uv_extract/uv-aarch64-unknown-linux-gnu/uv" \
+  "$hermes_home/bin/uv"
+install -o hermes -g hermes -m 0755 \
+  "$uv_extract/uv-aarch64-unknown-linux-gnu/uvx" \
+  "$hermes_home/bin/uvx"
+rm -rf -- "$uv_archive" "$uv_extract"
+"$hermes_home/bin/uv" --version
+
 curl -fsSL --retry 3 \
-  https://hermes-agent.nousresearch.com/install.sh \
+  "https://raw.githubusercontent.com/NousResearch/hermes-agent/$HERMES_INSTALL_COMMIT/scripts/install.sh" \
   -o /tmp/hermes-install.sh
+printf '%s  %s\n' "$hermes_installer_sha256" /tmp/hermes-install.sh |
+  sha256sum --check --status
 chmod 0755 /tmp/hermes-install.sh
 
 installer_args=(
@@ -111,7 +173,35 @@ if [[ -n ${HERMES_INSTALL_COMMIT:-} ]]; then
   installer_args+=(--commit "$HERMES_INSTALL_COMMIT")
 fi
 
-HERMES_HOME="$hermes_home" /tmp/hermes-install.sh "${installer_args[@]}"
+set +e
+HERMES_HOME="$hermes_home" timeout --signal=TERM --kill-after=30s 20m \
+  /tmp/hermes-install.sh "${installer_args[@]}"
+installer_status=$?
+set -e
+if [[ $installer_status -eq 124 || $installer_status -eq 137 ]]; then
+  printf 'Hermes installation timed out after 20 minutes\n' >&2
+  exit 1
+fi
+if [[ $installer_status -ne 0 ]]; then
+  printf 'Hermes installation failed with status %d\n' "$installer_status" >&2
+  exit "$installer_status"
+fi
+
+# Hermes' stock 0.16.0 approval modes do not include the conservative one-shot
+# Codex reviewer. Apply the source extension only to the reviewed commit. The
+# patcher verifies every upstream anchor and compiles the result before it
+# writes gated mode into config.yaml, so revision drift cannot leave a YAML-only
+# gate that silently does nothing.
+/usr/local/lib/hermes-agent/venv/bin/python \
+  /tmp/hermes-box-patch-hermes-gated-approval.py \
+  --source /usr/local/lib/hermes-agent \
+  --module /tmp/hermes-box-hermes-gated-approval.py \
+  --config "$hermes_home/config.yaml"
+HERMES_GATED_APPROVAL_SOURCE=/usr/local/lib/hermes-agent \
+HERMES_GATED_APPROVAL_MODULE=/usr/local/lib/hermes-agent/tools/gated_approval.py \
+PYTHONPATH=/usr/local/lib/hermes-agent \
+  /usr/local/lib/hermes-agent/venv/bin/python \
+  /tmp/hermes-box-test-hermes-gated-approval.py
 
 cat >"$codex_home/config.toml" <<'EOF'
 # Hermes Box is the outer sandbox, so Codex runs autonomously inside the VM.

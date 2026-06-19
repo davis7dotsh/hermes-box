@@ -10,28 +10,34 @@ import (
 )
 
 const (
-	defaultMachineName = "hermes-box"
-	defaultBuilderName = "hermes-builder"
-	defaultSSHPort     = 2222
-	defaultCPUs        = 4
-	defaultMemoryMiB   = 8192
-	defaultStorageGB   = 15
-	defaultOverlayGB   = 6
-	defaultNetworkMode = "none"
+	defaultMachineName   = "hermes-box"
+	defaultBuilderName   = "hermes-builder"
+	defaultSSHPort       = 2222
+	defaultCPUs          = 4
+	defaultMemoryMiB     = 8192
+	defaultStorageGB     = 15
+	defaultOverlayGB     = 6
+	defaultNetworkMode   = "none"
+	defaultHermesCommit  = "81eaedd0f5c471c7ee748990066135a684f3c962"
+	defaultExecutorPort  = 4788
+	defaultExecutorImage = "ghcr.io/rhyssullivan/executor-selfhost:v1.5.12@sha256:e40b2179c005b3124e794e9a8505341db46d0a9a1631e7f3fdcd023462ecf70b"
 )
 
 type Config struct {
-	MachineName  string
-	BuilderName  string
-	SSHPort      int
-	CPUs         int
-	MemoryMiB    int
-	StorageGB    int
-	OverlayGB    int
-	NetworkMode  string
-	HermesCommit string
-	DataDir      string
-	ConfigFile   string
+	MachineName     string
+	BuilderName     string
+	SSHPort         int
+	CPUs            int
+	MemoryMiB       int
+	StorageGB       int
+	OverlayGB       int
+	NetworkMode     string
+	HermesCommit    string
+	ExecutorEnabled bool
+	ExecutorPort    int
+	ExecutorImage   string
+	DataDir         string
+	ConfigFile      string
 }
 
 var keys = map[string]func(*Config, string) error{
@@ -66,6 +72,16 @@ var keys = map[string]func(*Config, string) error{
 		c.HermesCommit = value
 		return nil
 	},
+	"HERMES_BOX_EXECUTOR_ENABLED": func(c *Config, value string) error {
+		return setBool(&c.ExecutorEnabled, "HERMES_BOX_EXECUTOR_ENABLED", value)
+	},
+	"HERMES_BOX_EXECUTOR_PORT": func(c *Config, value string) error {
+		return setInt(&c.ExecutorPort, "HERMES_BOX_EXECUTOR_PORT", value)
+	},
+	"HERMES_BOX_EXECUTOR_IMAGE": func(c *Config, value string) error {
+		c.ExecutorImage = value
+		return nil
+	},
 	"HERMES_BOX_DATA_DIR": func(c *Config, value string) error {
 		c.DataDir = value
 		return nil
@@ -74,14 +90,17 @@ var keys = map[string]func(*Config, string) error{
 
 func Load(projectRoot string, environ []string) (Config, error) {
 	cfg := Config{
-		MachineName: defaultMachineName,
-		BuilderName: defaultBuilderName,
-		SSHPort:     defaultSSHPort,
-		CPUs:        defaultCPUs,
-		MemoryMiB:   defaultMemoryMiB,
-		StorageGB:   defaultStorageGB,
-		OverlayGB:   defaultOverlayGB,
-		NetworkMode: defaultNetworkMode,
+		MachineName:   defaultMachineName,
+		BuilderName:   defaultBuilderName,
+		SSHPort:       defaultSSHPort,
+		CPUs:          defaultCPUs,
+		MemoryMiB:     defaultMemoryMiB,
+		StorageGB:     defaultStorageGB,
+		OverlayGB:     defaultOverlayGB,
+		NetworkMode:   defaultNetworkMode,
+		HermesCommit:  defaultHermesCommit,
+		ExecutorPort:  defaultExecutorPort,
+		ExecutorImage: defaultExecutorImage,
 	}
 
 	env := environment(environ)
@@ -123,6 +142,12 @@ func (c *Config) applyEmptyDefaults() {
 	if c.NetworkMode == "" {
 		c.NetworkMode = defaultNetworkMode
 	}
+	if c.HermesCommit == "" {
+		c.HermesCommit = defaultHermesCommit
+	}
+	if c.ExecutorImage == "" {
+		c.ExecutorImage = defaultExecutorImage
+	}
 }
 
 func (c Config) Validate() error {
@@ -137,6 +162,17 @@ func (c Config) Validate() error {
 	}
 	if c.SSHPort < 1 || c.SSHPort > 65535 {
 		return fmt.Errorf("HERMES_BOX_SSH_PORT must be between 1 and 65535")
+	}
+	if c.ExecutorEnabled && (c.ExecutorPort < 1 || c.ExecutorPort > 65535) {
+		return fmt.Errorf("HERMES_BOX_EXECUTOR_PORT must be between 1 and 65535")
+	}
+	if c.ExecutorEnabled && c.ExecutorPort == c.SSHPort {
+		return fmt.Errorf("HERMES_BOX_EXECUTOR_PORT must differ from HERMES_BOX_SSH_PORT")
+	}
+	if c.ExecutorEnabled {
+		if err := validatePinnedImage(c.ExecutorImage); err != nil {
+			return fmt.Errorf("HERMES_BOX_EXECUTOR_IMAGE %w", err)
+		}
 	}
 	for name, value := range map[string]int{
 		"HERMES_BOX_CPUS":       c.CPUs,
@@ -309,6 +345,8 @@ func setInt(target *int, name, value string) error {
 			*target = defaultStorageGB
 		case "HERMES_BOX_OVERLAY_GB":
 			*target = defaultOverlayGB
+		case "HERMES_BOX_EXECUTOR_PORT":
+			*target = defaultExecutorPort
 		}
 		return nil
 	}
@@ -317,6 +355,36 @@ func setInt(target *int, name, value string) error {
 		return fmt.Errorf("%s must be an integer", name)
 	}
 	*target = parsed
+	return nil
+}
+
+func setBool(target *bool, name, value string) error {
+	if value == "" {
+		*target = false
+		return nil
+	}
+	parsed, err := strconv.ParseBool(value)
+	if err != nil {
+		return fmt.Errorf("%s must be true or false", name)
+	}
+	*target = parsed
+	return nil
+}
+
+func validatePinnedImage(value string) error {
+	prefix, digest, ok := strings.Cut(value, "@sha256:")
+	if !ok || prefix == "" || len(digest) != 64 || strings.ContainsAny(prefix, " \t\r\n") {
+		return fmt.Errorf("must be an image tag pinned by a full sha256 digest")
+	}
+	lastSlash := strings.LastIndexByte(prefix, '/')
+	if !strings.Contains(prefix[lastSlash+1:], ":") {
+		return fmt.Errorf("must include an explicit version tag before its digest")
+	}
+	for start := 0; start < len(digest); start += 16 {
+		if _, err := strconv.ParseUint(digest[start:start+16], 16, 64); err != nil {
+			return fmt.Errorf("digest must be hexadecimal")
+		}
+	}
 	return nil
 }
 

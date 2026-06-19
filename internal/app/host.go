@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -98,7 +99,7 @@ func (a *App) verifyLoopbackListener(ctx context.Context, port int) error {
 		Stderr: io.Discard,
 	})
 	if err != nil {
-		return fmt.Errorf("no listener found on SSH port %d", port)
+		return fmt.Errorf("no listener found on port %d", port)
 	}
 
 	found := false
@@ -112,7 +113,7 @@ func (a *App) verifyLoopbackListener(ctx context.Context, port int) error {
 		endpoint := strings.TrimPrefix(line, "n")
 		host, endpointPort, err := net.SplitHostPort(endpoint)
 		if err != nil {
-			return fmt.Errorf("could not parse SSH listener %q", endpoint)
+			return fmt.Errorf("could not parse listener %q", endpoint)
 		}
 		if endpointPort != strconv.Itoa(port) || host != "127.0.0.1" && host != "::1" {
 			return fmt.Errorf("unsafe listener detected: %s", endpoint)
@@ -122,7 +123,7 @@ func (a *App) verifyLoopbackListener(ctx context.Context, port int) error {
 		return fmt.Errorf("read listener data: %w", err)
 	}
 	if !found {
-		return fmt.Errorf("no listener found on SSH port %d", port)
+		return fmt.Errorf("no listener found on port %d", port)
 	}
 	return nil
 }
@@ -168,6 +169,18 @@ sudo -iu hermes npm --version
 sudo -iu hermes tmux -V
 sudo -iu hermes codex --strict-config --version
 `
+	if a.config.ExecutorEnabled {
+		script += `
+supervisorctl status executor | grep -q RUNNING
+test -L /workspace/.hermes-box-runtime/executor/current
+test "$(cat /workspace/.hermes-box-runtime/executor/current/.image-reference)" = "$HERMES_BOX_EXECUTOR_IMAGE"
+test -s /workspace/.hermes-box-runtime/executor/current/.manifest-digest
+executor_pid=$(sudo -u hermes sudo supervisorctl pid executor)
+sudo -u hermes sh -c 'tr "\0" "\n" <"/proc/$1/environ"' sh "$executor_pid" |
+  grep -qx 'BUN_FEATURE_FLAG_DISABLE_IPV6=1'
+curl -fsS http://127.0.0.1:4788/api/health >/dev/null
+`
+	}
 	return a.runQuiet(
 		ctx,
 		"smolvm",
@@ -175,6 +188,82 @@ sudo -iu hermes codex --strict-config --version
 		"--name", name,
 		"--",
 		"bash", "-lc", script,
+	)
+}
+
+func (a *App) verifyExecutorHTTP(ctx context.Context) error {
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodGet,
+		fmt.Sprintf("http://127.0.0.1:%d/api/health", a.config.ExecutorPort),
+		nil,
+	)
+	if err != nil {
+		return err
+	}
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(request)
+	if err != nil {
+		return fmt.Errorf("Executor health check failed: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return fmt.Errorf("Executor health check returned %s", response.Status)
+	}
+	return nil
+}
+
+func (a *App) verifyBuilderNetwork(ctx context.Context, name string) error {
+	script := `
+set -e
+awk '$2 == "00000000" && $4 ~ /3/ { found = 1 } END { exit !found }' /proc/net/route
+getent ahostsv4 ports.ubuntu.com >/dev/null
+`
+	return a.runQuiet(
+		ctx,
+		"smolvm",
+		"machine", "exec",
+		"--name", name,
+		"--",
+		"bash", "-lc", script,
+	)
+}
+
+func (a *App) ensureBuilderNetwork(ctx context.Context, name string) error {
+	const (
+		bootAttempts  = 3
+		probeAttempts = 15
+	)
+	for bootAttempt := 1; bootAttempt <= bootAttempts; bootAttempt++ {
+		for range probeAttempts {
+			if err := a.verifyBuilderNetwork(ctx, name); err == nil {
+				return nil
+			}
+			if err := sleep(ctx, time.Second); err != nil {
+				return err
+			}
+		}
+		if bootAttempt == bootAttempts {
+			break
+		}
+		a.log(
+			"builder network unavailable after boot %d/%d; restarting disposable builder",
+			bootAttempt,
+			bootAttempts,
+		)
+		if err := a.run(ctx, "smolvm", "machine", "stop", "--name", name); err != nil {
+			return err
+		}
+		if err := a.run(ctx, "smolvm", "machine", "update", "--name", name, "--net"); err != nil {
+			return err
+		}
+		if err := a.run(ctx, "smolvm", "machine", "start", "--name", name); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf(
+		"builder %s has no usable IPv4 route or DNS after %d boots",
+		name,
+		bootAttempts,
 	)
 }
 
@@ -217,8 +306,25 @@ func (a *App) startNamedMachine(ctx context.Context, name string, port int) erro
 	if err := a.verifyLoopbackListener(ctx, port); err != nil {
 		return err
 	}
-	if err := a.waitForGuest(ctx, name, port, 240); err != nil {
+	attempts := 240
+	if a.config.ExecutorEnabled {
+		attempts = 1800
+	}
+	if a.config.ExecutorEnabled {
+		if err := waitForPort(ctx, a.config.ExecutorPort, attempts); err != nil {
+			return err
+		}
+		if err := a.verifyLoopbackListener(ctx, a.config.ExecutorPort); err != nil {
+			return fmt.Errorf("Executor listener is not loopback-only: %w", err)
+		}
+	}
+	if err := a.waitForGuest(ctx, name, port, attempts); err != nil {
 		return err
+	}
+	if a.config.ExecutorEnabled {
+		if err := a.verifyExecutorHTTP(ctx); err != nil {
+			return err
+		}
 	}
 	stopOnFailure = false
 	return nil
@@ -235,7 +341,11 @@ func (a *App) stopNamedMachine(ctx context.Context, name string) error {
 	if !running {
 		return nil
 	}
-	_ = a.runQuiet(ctx, "smolvm", "machine", "exec", "--name", name, "--", "supervisorctl", "stop", "hermes")
+	if a.config.ExecutorEnabled {
+		_ = a.runQuiet(ctx, "smolvm", "machine", "exec", "--name", name, "--", "supervisorctl", "stop", "hermes", "executor")
+	} else {
+		_ = a.runQuiet(ctx, "smolvm", "machine", "exec", "--name", name, "--", "supervisorctl", "stop", "hermes")
+	}
 	return a.run(ctx, "smolvm", "machine", "stop", "--name", name)
 }
 
@@ -273,7 +383,13 @@ func (a *App) runtimeCreateArgs(name, artifact string, port int) ([]string, erro
 		"--storage", strconv.Itoa(a.config.StorageGB),
 		"--overlay", strconv.Itoa(a.config.OverlayGB),
 		"-p", fmt.Sprintf("%d:22", port),
+		"-e", "HERMES_BOX_EXECUTOR_ENABLED=" + strconv.FormatBool(a.config.ExecutorEnabled),
+		"-e", "HERMES_BOX_EXECUTOR_IMAGE=" + a.config.ExecutorImage,
+		"-e", "HERMES_BOX_EXECUTOR_HOST_PORT=" + strconv.Itoa(a.config.ExecutorPort),
 		"--net",
+	}
+	if a.config.ExecutorEnabled {
+		args = append(args, "-p", fmt.Sprintf("%d:4788", a.config.ExecutorPort))
 	}
 	secrets, err := readSecretMappings(a.secretEnvFile)
 	if err != nil {
@@ -303,8 +419,26 @@ func (a *App) createFromArtifact(ctx context.Context, name, artifact string, por
 	if err != nil {
 		return err
 	}
-	if err := a.run(ctx, "smolvm", args...); err != nil {
+	createArgs := append(
+		[]string{"SMOLVM_PACK_CACHE_MAX_BYTES=17179869184", "smolvm"},
+		args...,
+	)
+	if err := a.runner.Run(ctx, process.Spec{
+		Name:   "env",
+		Args:   createArgs,
+		Stdout: a.stdout,
+		Stderr: a.stderr,
+	}); err != nil {
 		return err
+	}
+	dataDir, err := a.output(ctx, "smolvm", "machine", "data-dir", "--name", name)
+	if err != nil {
+		return fmt.Errorf("locate machine data for %s: %w", name, err)
+	}
+	marker := filepath.Join(trimOutput(dataDir), "pack", ".smolvm-extracted")
+	if _, err := os.Stat(marker); err != nil {
+		_ = a.runQuiet(ctx, "smolvm", "machine", "delete", "--name", name, "--force")
+		return fmt.Errorf("verify packed layers for %s: %w", name, err)
 	}
 	return a.run(ctx, "smolvm", "machine", "update", "--name", name, "--net")
 }
