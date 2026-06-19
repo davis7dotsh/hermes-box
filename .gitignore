@@ -5,7 +5,7 @@ state/*
 hermes-box.conf
 secret-env.txt
 dist/
-/10xn-hermes-miles/
+/*-hermes-*/
 !backups/.gitkeep
 !images/.gitkeep
 !state/.gitkeep

@@ -28,6 +28,7 @@ tar \
   --numeric-owner \
   -C /workspace \
   -czpf "$workspace" \
+  --exclude=./.hermes-box-runtime \
   --exclude=.hermes-box-rootfs.tar.gz \
   . 2>>"$warnings"
 
