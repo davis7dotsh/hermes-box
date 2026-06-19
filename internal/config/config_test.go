@@ -159,6 +159,18 @@ func TestLoadResolvesRelativeDataDirectory(t *testing.T) {
 	}
 }
 
+func TestLoadResolvesExternalSSHKey(t *testing.T) {
+	root := t.TempDir()
+	cfg, err := Load(root, []string{"HERMES_BOX_SSH_KEY=../keys/miles-ed25519"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Clean(filepath.Join(root, "../keys/miles-ed25519"))
+	if cfg.SSHKey != want {
+		t.Fatalf("SSHKey = %q, want %q", cfg.SSHKey, want)
+	}
+}
+
 func TestLoadRejectsShellCode(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(

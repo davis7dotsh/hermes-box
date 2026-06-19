@@ -172,12 +172,15 @@ sudo -iu hermes codex --strict-config --version
 	if a.config.ExecutorEnabled {
 		script += `
 supervisorctl status executor | grep -q RUNNING
-test -L /workspace/.hermes-box-runtime/executor/current
-test "$(cat /workspace/.hermes-box-runtime/executor/current/.image-reference)" = "$HERMES_BOX_EXECUTOR_IMAGE"
-test -s /workspace/.hermes-box-runtime/executor/current/.manifest-digest
-executor_pid=$(sudo -u hermes sudo supervisorctl pid executor)
-sudo -u hermes sh -c 'tr "\0" "\n" <"/proc/$1/environ"' sh "$executor_pid" |
-  grep -qx 'BUN_FEATURE_FLAG_DISABLE_IPV6=1'
+if test -L /workspace/.hermes-box-runtime/executor/current; then
+  test "$(cat /workspace/.hermes-box-runtime/executor/current/.image-reference)" = "$HERMES_BOX_EXECUTOR_IMAGE"
+  test -s /workspace/.hermes-box-runtime/executor/current/.manifest-digest
+  executor_pid=$(sudo -u hermes sudo supervisorctl pid executor)
+  sudo -u hermes sh -c 'tr "\0" "\n" <"/proc/$1/environ"' sh "$executor_pid" |
+    grep -qx 'BUN_FEATURE_FLAG_DISABLE_IPV6=1'
+else
+  test -d /storage/executor-runtime
+fi
 curl -fsS http://127.0.0.1:4788/api/health >/dev/null
 `
 	}
@@ -289,6 +292,28 @@ func (a *App) waitForGuest(ctx context.Context, name string, port, attempts int)
 	return fmt.Errorf("guest %s did not become healthy: %w", name, lastErr)
 }
 
+func (a *App) waitForMachineExec(ctx context.Context, name string, attempts int) error {
+	var lastErr error
+	for range attempts {
+		if err := a.runQuiet(
+			ctx,
+			"smolvm",
+			"machine", "exec",
+			"--name", name,
+			"--",
+			"true",
+		); err == nil {
+			return nil
+		} else {
+			lastErr = err
+		}
+		if err := sleep(ctx, 500*time.Millisecond); err != nil {
+			return err
+		}
+	}
+	return fmt.Errorf("guest agent for %s did not become ready: %w", name, lastErr)
+}
+
 func (a *App) startNamedMachine(ctx context.Context, name string, port int) error {
 	if err := a.run(ctx, "smolvm", "machine", "start", "--name", name); err != nil {
 		return err
@@ -351,9 +376,12 @@ func (a *App) stopNamedMachine(ctx context.Context, name string) error {
 
 func (a *App) ensureKey(ctx context.Context) error {
 	if _, err := os.Stat(a.sshKey); err == nil {
-		return nil
+		return a.requireSSHKey(ctx)
 	} else if !os.IsNotExist(err) {
 		return fmt.Errorf("inspect SSH key: %w", err)
+	}
+	if a.externalKey {
+		return fmt.Errorf("configured SSH key not found: %s", a.sshKey)
 	}
 	a.log("generating dedicated SSH key: %s", a.sshKey)
 	if err := a.run(
@@ -367,7 +395,44 @@ func (a *App) ensureKey(ctx context.Context) error {
 	); err != nil {
 		return err
 	}
-	return os.Chmod(a.sshKey, 0o600)
+	return a.requireSSHKey(ctx)
+}
+
+func (a *App) requireSSHKey(ctx context.Context) error {
+	info, err := os.Stat(a.sshKey)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("restore requires the stable external SSH key: %s", a.sshKey)
+		}
+		return fmt.Errorf("inspect SSH key: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("SSH key is not a regular file: %s", a.sshKey)
+	}
+	if err := os.Chmod(a.sshKey, 0o600); err != nil {
+		return fmt.Errorf("secure SSH key: %w", err)
+	}
+	publicKey, err := a.output(ctx, "ssh-keygen", "-y", "-f", a.sshKey)
+	if err != nil {
+		return fmt.Errorf("derive SSH public key: %w", err)
+	}
+	publicKey = []byte(strings.TrimSpace(string(publicKey)) + "\n")
+	if err := os.WriteFile(a.sshPublicKey, publicKey, 0o600); err != nil {
+		return fmt.Errorf("write derived SSH public key: %w", err)
+	}
+	return nil
+}
+
+func (a *App) sshFingerprint(ctx context.Context) (string, error) {
+	output, err := a.output(ctx, "ssh-keygen", "-lf", a.sshPublicKey, "-E", "sha256")
+	if err != nil {
+		return "", fmt.Errorf("fingerprint SSH key: %w", err)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) < 2 || !strings.HasPrefix(fields[1], "SHA256:") {
+		return "", errors.New("ssh-keygen returned an invalid fingerprint")
+	}
+	return fields[1], nil
 }
 
 func (a *App) runtimeCreateArgs(name, artifact string, port int) ([]string, error) {
@@ -414,7 +479,12 @@ func (a *App) validateNetworkMode() error {
 	}
 }
 
-func (a *App) createFromArtifact(ctx context.Context, name, artifact string, port int) error {
+func (a *App) createFromArtifact(
+	ctx context.Context,
+	name, artifact string,
+	port int,
+	restoreMode bool,
+) error {
 	args, err := a.runtimeCreateArgs(name, artifact, port)
 	if err != nil {
 		return err
@@ -423,6 +493,9 @@ func (a *App) createFromArtifact(ctx context.Context, name, artifact string, por
 		[]string{"SMOLVM_PACK_CACHE_MAX_BYTES=17179869184", "smolvm"},
 		args...,
 	)
+	if restoreMode {
+		createArgs = append(createArgs, "-e", "HERMES_BOX_RESTORE_MODE=true")
+	}
 	if err := a.runner.Run(ctx, process.Spec{
 		Name:   "env",
 		Args:   createArgs,
@@ -450,7 +523,13 @@ func (a *App) createBlankMachine(ctx context.Context, name string, port int) err
 		}
 		return err
 	}
-	return a.createFromArtifact(ctx, name, a.baseArtifact, port)
+	return a.createFromArtifact(
+		ctx,
+		name,
+		a.baseArtifact,
+		port,
+		true,
+	)
 }
 
 func readSecretMappings(path string) ([]string, error) {

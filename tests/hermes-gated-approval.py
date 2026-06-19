@@ -18,6 +18,12 @@ ROOT = Path(__file__).resolve().parents[1]
 MODULE_PATH = Path(
     os.environ.get("HERMES_GATED_APPROVAL_MODULE", ROOT / "guest" / "hermes_gated_approval.py")
 )
+PATCHER_PATH = Path(
+    os.environ.get(
+        "HERMES_GATED_APPROVAL_PATCHER",
+        ROOT / "guest" / "patch-hermes-gated-approval.py",
+    )
+)
 SPEC = importlib.util.spec_from_file_location("gated_approval_under_test", MODULE_PATH)
 gate = importlib.util.module_from_spec(SPEC)
 assert SPEC and SPEC.loader
@@ -181,7 +187,7 @@ class TestGatedApproval(unittest.TestCase):
 
 class TestPatcherRecovery(unittest.TestCase):
     def test_marker_precedes_config_seeding_on_first_install(self):
-        patcher = (ROOT / "guest" / "patch-hermes-gated-approval.py").read_text()
+        patcher = PATCHER_PATH.read_text()
         first_install = patcher.rsplit("    patch_approval(approval)\n", 1)[1]
         self.assertLess(
             first_install.index("marker.write_text(marker_content)"),

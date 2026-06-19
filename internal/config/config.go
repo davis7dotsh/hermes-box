@@ -37,6 +37,7 @@ type Config struct {
 	ExecutorPort    int
 	ExecutorImage   string
 	DataDir         string
+	SSHKey          string
 	ConfigFile      string
 }
 
@@ -86,6 +87,10 @@ var keys = map[string]func(*Config, string) error{
 		c.DataDir = value
 		return nil
 	},
+	"HERMES_BOX_SSH_KEY": func(c *Config, value string) error {
+		c.SSHKey = value
+		return nil
+	},
 }
 
 func Load(projectRoot string, environ []string) (Config, error) {
@@ -125,6 +130,12 @@ func Load(projectRoot string, environ []string) (Config, error) {
 			cfg.DataDir = filepath.Join(projectRoot, cfg.DataDir)
 		}
 		cfg.DataDir = filepath.Clean(cfg.DataDir)
+	}
+	if cfg.SSHKey != "" {
+		if !filepath.IsAbs(cfg.SSHKey) {
+			cfg.SSHKey = filepath.Join(projectRoot, cfg.SSHKey)
+		}
+		cfg.SSHKey = filepath.Clean(cfg.SSHKey)
 	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err

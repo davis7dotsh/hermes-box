@@ -1,8 +1,13 @@
 # Portable Restore
 
 This archive contains a complete Hermes Box snapshot, its smolvm base image,
-the host wrapper, and the dedicated SSH key needed to access the restored box.
-It also contains Hermes credentials and may contain API keys.
+and the host wrapper. It intentionally excludes the dedicated SSH key needed
+to access the restored box. It contains Hermes credentials and may contain API
+keys.
+
+The packaged `AGENTS.md` provides the short expand, restore, and run sequence.
+For current documentation and troubleshooting, see the
+[Hermes Box repository](https://github.com/davis7dotsh/hermes-box).
 
 For Executor-enabled boxes, the package preserves the enabled state, host
 loopback port, exact digest-pinned image, and `/workspace/executor/data`.
@@ -33,7 +38,8 @@ Restore:
 shasum -a 256 -c hermes-box-portable-*.tar.sha256
 tar -xpf hermes-box-portable-*.tar
 cd hermes-box
-chmod 600 state/hermes-box-ed25519 images/hermes-base.smolmachine
+chmod 600 /secure/path/hermes-box-ed25519 images/hermes-base.smolmachine
+printf '\nHERMES_BOX_SSH_KEY=%s\n' /secure/path/hermes-box-ed25519 >>hermes-box.conf
 ./bin/hermes-box restore backups/*.hermesbox
 ./bin/hermes-box status
 ./bin/hermes-box executor status
@@ -41,6 +47,12 @@ chmod 600 state/hermes-box-ed25519 images/hermes-base.smolmachine
   'sudo -iu hermes env HERMES_HOME=/workspace/hermes-home hermes mcp test executor'
 ./bin/hermes-box ssh
 ```
+
+Retrieve the same stable private key used to create the source box from an
+encrypted secret store such as 1Password. One key can restore every archive
+from that box. Hermes Box derives the public key automatically, checks the key
+fingerprint recorded by new snapshots, and preserves the supplied identity
+when applying the archived root filesystem.
 
 The packaged configuration uses repository-local `images/`, `backups/`, and
 `state/` directories and preserves the source box's machine names and ports.
@@ -53,9 +65,9 @@ restored from the snapshot. No Hermes setup is required afterward. If the
 archive contains an optional `secret-env.txt`, its referenced host environment
 variables must be defined on the destination host before restore.
 
-The source host's macOS Keychain entries and browser sessions are not included,
-and the repullable Executor runtime under `/workspace/.hermes-box-runtime` is
-intentionally omitted.
+The source host's SSH key, macOS Keychain entries, and browser sessions are not
+included, and the repullable Executor runtime under
+`/workspace/.hermes-box-runtime` is intentionally omitted.
 If host-side Executor inventory and MCP test commands are needed on the new
 Mac, create a destination-local API key in the restored portal and run:
 

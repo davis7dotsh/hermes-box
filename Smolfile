@@ -1,5 +1,5 @@
 image = "ubuntu:24.04"
-entrypoint = ["/usr/local/sbin/hermes-box-start"]
+entrypoint = ["/usr/local/sbin/hermes-box-entrypoint"]
 cmd = ["run"]
 cpus = 4
 memory = 8192

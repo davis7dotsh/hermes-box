@@ -116,6 +116,8 @@ chmod 0644 /etc/profile.d/hermes-box.sh
 install -o root -g root -m 0755 \
   /tmp/hermes-box-start.sh /usr/local/sbin/hermes-box-start
 install -o root -g root -m 0755 \
+  /tmp/hermes-box-entrypoint.sh /usr/local/sbin/hermes-box-entrypoint
+install -o root -g root -m 0755 \
   /tmp/hermes-box-executor.sh /usr/local/sbin/hermes-box-executor
 install -o root -g root -m 0755 \
   /tmp/hermes-box-extract-executor.py \
@@ -199,6 +201,7 @@ fi
   --config "$hermes_home/config.yaml"
 HERMES_GATED_APPROVAL_SOURCE=/usr/local/lib/hermes-agent \
 HERMES_GATED_APPROVAL_MODULE=/usr/local/lib/hermes-agent/tools/gated_approval.py \
+HERMES_GATED_APPROVAL_PATCHER=/tmp/hermes-box-patch-hermes-gated-approval.py \
 PYTHONPATH=/usr/local/lib/hermes-agent \
   /usr/local/lib/hermes-agent/venv/bin/python \
   /tmp/hermes-box-test-hermes-gated-approval.py

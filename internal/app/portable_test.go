@@ -18,7 +18,11 @@ func TestCreatePortablePackageIncludesRequiredArtifacts(t *testing.T) {
 
 	root := t.TempDir()
 	dataRoot := t.TempDir()
+	sshKey := filepath.Join(root, "credentials", "stable-key")
 	if err := os.MkdirAll(filepath.Join(root, "bin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(sshKey), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(
@@ -31,6 +35,36 @@ func TestCreatePortablePackageIncludesRequiredArtifacts(t *testing.T) {
 	if err := os.WriteFile(
 		filepath.Join(root, "hermes-box.conf"),
 		[]byte("HERMES_BOX_DATA_DIR=/old/host/path\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, "AGENTS.md"),
+		[]byte("source contributor instructions\n"),
+		0o644,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(sshKey, []byte("external private key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	nestedDataRoot := filepath.Join(root, "another-box")
+	for _, directory := range []string{"images", "backups", "state"} {
+		if err := os.MkdirAll(filepath.Join(nestedDataRoot, directory), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(
+		filepath.Join(nestedDataRoot, "hermes-box.conf"),
+		[]byte("HERMES_BOX_MACHINE_NAME=another-box\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(nestedDataRoot, "state", "hermes-box-ed25519"),
+		[]byte("unrelated private key"),
 		0o600,
 	); err != nil {
 		t.Fatal(err)
@@ -49,18 +83,13 @@ func TestCreatePortablePackageIncludesRequiredArtifacts(t *testing.T) {
 		ExecutorPort:    4789,
 		ExecutorImage:   executorImage,
 		DataDir:         dataRoot,
+		SSHKey:          sshKey,
 	}
 	application := New(root, cfg, process.OSRunner{}, io.Discard, io.Discard)
 	if err := application.prepareDirs(); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(application.baseArtifact, []byte("base"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(application.sshKey, []byte("private"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(application.sshKey+".pub", []byte("public"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	backupDir := filepath.Join(application.backupsDir, "portable.hermesbox")
@@ -74,15 +103,42 @@ func TestCreatePortablePackageIncludesRequiredArtifacts(t *testing.T) {
 	}
 	entries := readPortableArchive(t, archivePath)
 	for _, name := range []string{
+		"hermes-box/AGENTS.md",
 		"hermes-box/bin/hermes-box",
 		"hermes-box/hermes-box.conf",
 		"hermes-box/images/hermes-base.smolmachine",
 		"hermes-box/backups/portable.hermesbox/manifest.txt",
-		"hermes-box/state/hermes-box-ed25519",
-		"hermes-box/state/hermes-box-ed25519.pub",
 	} {
 		if _, ok := entries[name]; !ok {
 			t.Errorf("portable archive is missing %s", name)
+		}
+	}
+	portableAgentsFile := string(entries["hermes-box/AGENTS.md"])
+	for _, expected := range []string{
+		"shasum -a 256 -c hermes-box-portable-*.tar.sha256",
+		"tar -xpf hermes-box-portable-*.tar",
+		"./bin/hermes-box restore backups/*.hermesbox",
+		"./bin/hermes-box start",
+		"./bin/hermes-box status",
+		"./bin/hermes-box ssh",
+		"https://github.com/davis7dotsh/hermes-box",
+	} {
+		if !strings.Contains(portableAgentsFile, expected) {
+			t.Errorf("portable AGENTS.md is missing %q", expected)
+		}
+	}
+	if strings.Contains(portableAgentsFile, "source contributor instructions") {
+		t.Fatal("portable AGENTS.md retained source contributor instructions")
+	}
+	for _, forbidden := range []string{
+		"hermes-box/credentials/stable-key",
+		"hermes-box/another-box/hermes-box.conf",
+		"hermes-box/another-box/state/hermes-box-ed25519",
+		"hermes-box/state/hermes-box-ed25519",
+		"hermes-box/state/hermes-box-ed25519.pub",
+	} {
+		if _, ok := entries[forbidden]; ok {
+			t.Errorf("portable archive contains SSH key material: %s", forbidden)
 		}
 	}
 	portableConfig := string(entries["hermes-box/hermes-box.conf"])
@@ -91,6 +147,12 @@ func TestCreatePortablePackageIncludesRequiredArtifacts(t *testing.T) {
 	}
 	if strings.Contains(portableConfig, "/old/host/path") {
 		t.Fatalf("portable config contains the old host path:\n%s", portableConfig)
+	}
+	if !strings.Contains(portableConfig, "HERMES_BOX_SSH_KEY=\n") {
+		t.Fatalf("portable config is missing the external SSH key handoff:\n%s", portableConfig)
+	}
+	if strings.Contains(portableConfig, sshKey) {
+		t.Fatalf("portable config retained the source SSH key path:\n%s", portableConfig)
 	}
 	for _, expected := range []string{
 		"HERMES_BOX_EXECUTOR_ENABLED=true\n",

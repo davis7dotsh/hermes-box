@@ -21,6 +21,7 @@ tar \
   --exclude=./storage \
   --exclude=./packed_layers \
   --exclude=./tmp \
+  --exclude=./var/lib/hermes-box/restore-ready \
   . 2>"$warnings"
 
 tar \
@@ -29,6 +30,7 @@ tar \
   -C /workspace \
   -czpf "$workspace" \
   --exclude=./.hermes-box-runtime \
+  --exclude=./codex-home/tmp \
   --exclude=.hermes-box-rootfs.tar.gz \
   . 2>>"$warnings"
 

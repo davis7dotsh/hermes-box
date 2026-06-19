@@ -28,6 +28,8 @@ type App struct {
 	baseOutput    string
 	baseArtifact  string
 	sshKey        string
+	sshPublicKey  string
+	externalKey   bool
 	knownHosts    string
 	secretEnvFile string
 	lockPath      string
@@ -40,6 +42,10 @@ func New(root string, cfg config.Config, runner process.Runner, stdout, stderr i
 	}
 	imagesDir := filepath.Join(dataRoot, "images")
 	stateDir := filepath.Join(dataRoot, "state")
+	sshKey := filepath.Join(stateDir, "hermes-box-ed25519")
+	if cfg.SSHKey != "" {
+		sshKey = cfg.SSHKey
+	}
 	return &App{
 		root:          root,
 		config:        cfg,
@@ -51,7 +57,9 @@ func New(root string, cfg config.Config, runner process.Runner, stdout, stderr i
 		stateDir:      stateDir,
 		baseOutput:    filepath.Join(imagesDir, "hermes-base"),
 		baseArtifact:  filepath.Join(imagesDir, "hermes-base.smolmachine"),
-		sshKey:        filepath.Join(stateDir, "hermes-box-ed25519"),
+		sshKey:        sshKey,
+		sshPublicKey:  filepath.Join(stateDir, "hermes-box-ed25519.pub"),
+		externalKey:   cfg.SSHKey != "",
 		knownHosts:    filepath.Join(stateDir, "known_hosts"),
 		secretEnvFile: filepath.Join(root, "secret-env.txt"),
 		lockPath:      filepath.Join(stateDir, "operation.lock"),
@@ -197,6 +205,8 @@ Commands:
   executor SUBCOMMAND      Manage the local Executor service
   snapshot [LABEL]         Archive rootfs + workspace, checksum, then resume
   package [LABEL]          Snapshot and create a portable restore archive
+  package --snapshot BACKUP [LABEL]
+                           Package an existing verified snapshot
   restore BACKUP           Verify in a temporary box, then restore safely
   destroy --force          Delete VMs but retain keys, images, and backups
   help                     Show this help

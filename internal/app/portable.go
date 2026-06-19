@@ -3,6 +3,7 @@ package app
 import (
 	"archive/tar"
 	"context"
+	_ "embed"
 	"errors"
 	"fmt"
 	"io"
@@ -14,17 +15,36 @@ import (
 	"time"
 )
 
+//go:embed portable_agents.md
+var portableAgents string
+
 func (a *App) cmdPackage(ctx context.Context, args []string) error {
-	if len(args) > 1 {
-		return errors.New("package accepts at most one label")
-	}
 	label := "portable"
-	if len(args) == 1 {
-		label = args[0]
-	}
-	backupDir, err := a.snapshotInternal(ctx, label, true)
-	if err != nil {
-		return err
+	backupDir := ""
+	if len(args) > 0 && args[0] == "--snapshot" {
+		if len(args) < 2 || len(args) > 3 {
+			return errors.New("package --snapshot requires one .hermesbox directory and an optional label")
+		}
+		resolved, err := filepath.Abs(args[1])
+		if err != nil {
+			return fmt.Errorf("resolve snapshot path: %w", err)
+		}
+		backupDir = resolved
+		if len(args) == 3 {
+			label = args[2]
+		}
+	} else {
+		if len(args) > 1 {
+			return errors.New("package accepts at most one label")
+		}
+		if len(args) == 1 {
+			label = args[0]
+		}
+		var err error
+		backupDir, err = a.snapshotInternal(ctx, label, true)
+		if err != nil {
+			return err
+		}
 	}
 	archivePath, err := a.createPortablePackage(backupDir, label)
 	if err != nil {
@@ -38,10 +58,8 @@ func (a *App) createPortablePackage(backupDir, label string) (archivePath string
 	if err := verifyBackup(backupDir); err != nil {
 		return "", err
 	}
-	for _, path := range []string{a.baseArtifact, a.sshKey} {
-		if err := requireRegularFile(path); err != nil {
-			return "", err
-		}
+	if err := requireRegularFile(a.baseArtifact); err != nil {
+		return "", err
 	}
 
 	safeLabel := sanitizeLabel(label)
@@ -86,6 +104,15 @@ func (a *App) createPortablePackage(backupDir, label string) (archivePath string
 	}
 	if err := writeTarFile(
 		archive,
+		"hermes-box/AGENTS.md",
+		[]byte(portableAgents),
+		0o600,
+	); err != nil {
+		_ = closeArchive()
+		return "", err
+	}
+	if err := writeTarFile(
+		archive,
 		"hermes-box/hermes-box.conf",
 		[]byte(a.portableConfig()),
 		0o600,
@@ -118,31 +145,6 @@ func (a *App) createPortablePackage(backupDir, label string) (archivePath string
 	); err != nil {
 		_ = closeArchive()
 		return "", err
-	}
-	if err := addPathToTar(
-		archive,
-		a.sshKey,
-		"hermes-box/state/hermes-box-ed25519",
-	); err != nil {
-		_ = closeArchive()
-		return "", err
-	}
-	if _, statErr := os.Lstat(a.sshKey + ".pub"); statErr == nil {
-		if err := requireRegularFile(a.sshKey + ".pub"); err != nil {
-			_ = closeArchive()
-			return "", err
-		}
-		if err := addPathToTar(
-			archive,
-			a.sshKey+".pub",
-			"hermes-box/state/hermes-box-ed25519.pub",
-		); err != nil {
-			_ = closeArchive()
-			return "", err
-		}
-	} else if !os.IsNotExist(statErr) {
-		_ = closeArchive()
-		return "", fmt.Errorf("inspect SSH public key: %w", statErr)
 	}
 	if err := closeArchive(); err != nil {
 		return "", fmt.Errorf("finish portable archive: %w", err)
@@ -188,6 +190,12 @@ func (a *App) addProjectFiles(archive *tar.Writer) error {
 		if relative == "." {
 			return nil
 		}
+		if entry.IsDir() && isHermesDataRoot(path) {
+			return filepath.SkipDir
+		}
+		if filepath.Clean(path) == filepath.Clean(a.sshKey) {
+			return nil
+		}
 		if shouldSkipPortableProjectPath(relative, dataRelative) {
 			if entry.IsDir() {
 				return filepath.SkipDir
@@ -199,6 +207,22 @@ func (a *App) addProjectFiles(archive *tar.Writer) error {
 	})
 }
 
+func isHermesDataRoot(path string) bool {
+	for _, relative := range []string{"hermes-box.conf", "images", "backups", "state"} {
+		info, err := os.Stat(filepath.Join(path, relative))
+		if err != nil {
+			return false
+		}
+		if relative == "hermes-box.conf" && !info.Mode().IsRegular() {
+			return false
+		}
+		if relative != "hermes-box.conf" && !info.IsDir() {
+			return false
+		}
+	}
+	return true
+}
+
 func shouldSkipPortableProjectPath(relative, dataRelative string) bool {
 	relative = filepath.Clean(relative)
 	first, _, _ := strings.Cut(relative, string(filepath.Separator))
@@ -207,6 +231,9 @@ func shouldSkipPortableProjectPath(relative, dataRelative string) bool {
 		return true
 	}
 	if relative == "hermes-box.conf" {
+		return true
+	}
+	if relative == "AGENTS.md" {
 		return true
 	}
 	return dataRelative != "" &&
@@ -234,6 +261,7 @@ func (a *App) portableConfig() string {
 		fmt.Fprintf(&builder, "HERMES_BOX_EXECUTOR_IMAGE=%s\n", strconv.Quote(a.config.ExecutorImage))
 	}
 	builder.WriteString("HERMES_BOX_DATA_DIR=\n")
+	builder.WriteString("HERMES_BOX_SSH_KEY=\n")
 	return builder.String()
 }
 

@@ -229,6 +229,10 @@ if [[ ${HERMES_BOX_EXECUTOR_ENABLED:-false} == true ]]; then
     /workspace/executor/data \
     /workspace/.hermes-box-runtime \
     /workspace/.hermes-box-runtime/executor
+  find /workspace/executor ! -type l \
+    -exec chown hermes:hermes {} +
+  find /workspace/executor -type l \
+    -exec chown -h hermes:hermes {} \; 2>/dev/null || true
   cat >"$executor_supervisor" <<'EOF'
 [program:executor]
 command=/usr/local/sbin/hermes-box-executor

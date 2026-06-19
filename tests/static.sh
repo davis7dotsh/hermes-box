@@ -8,6 +8,7 @@ bash -n bin/hermes-box
 bash -n guest/bootstrap.sh
 bash -n guest/install-node.sh
 bash -n guest/start.sh
+bash -n guest/entrypoint.sh
 bash -n guest/executor.sh
 python3 -c 'compile(open("guest/extract-executor.py", encoding="utf-8").read(), "guest/extract-executor.py", "exec")'
 python3 -c 'compile(open("guest/hermes_gated_approval.py", encoding="utf-8").read(), "guest/hermes_gated_approval.py", "exec")'
@@ -32,6 +33,7 @@ if command -v shellcheck >/dev/null 2>&1; then
     guest/bootstrap.sh \
     guest/install-node.sh \
     guest/start.sh \
+    guest/entrypoint.sh \
     guest/executor.sh \
     guest/snapshot.sh \
     guest/restore.sh \
@@ -83,6 +85,7 @@ grep -Fq 'trust_level = "trusted"' guest/bootstrap.sh
 grep -Fq 'codex_version=0.141.0' guest/start.sh
 grep -Fq 'b70030338592de3e361f3cde83d624f88061df300abe31b62075a5c5a058a6fc' guest/start.sh
 grep -Fq 'startup_log=/var/log/hermes-box-startup.log' guest/start.sh
+grep -Fq 'HERMES_BOX_RESTORE_MODE' guest/entrypoint.sh
 grep -Fq -- '--connect-timeout 15 --max-time 600 --retry 5 --retry-all-errors' guest/start.sh
 grep -Fq "venv/bin/python -c 'import discord'" internal/app/host.go
 grep -Fq 'codex --strict-config --version' internal/app/host.go
@@ -91,6 +94,9 @@ grep -Fq 'skopeo copy' guest/executor.sh
 grep -Fq 'source_image=$repository@$digest' guest/executor.sh
 grep -Fq 'runtime_root=/workspace/.hermes-box-runtime/executor' guest/executor.sh
 grep -Fq -- '--exclude=./.hermes-box-runtime' guest/snapshot.sh
+grep -Fq -- '--exclude=./codex-home/tmp' guest/snapshot.sh
+grep -Fq -- '--exclude=./codex-home/tmp' guest/restore.sh
+grep -Fq -- '--exclude=./var/lib/hermes-box/restore-ready' guest/snapshot.sh
 grep -Fq 'guest", "executor.sh"), "/tmp/hermes-box-executor.sh"' internal/app/lifecycle.go
 grep -Fq '/tmp/hermes-box-executor.sh' guest/bootstrap.sh
 grep -Fq '/usr/local/sbin/hermes-box-executor' guest/bootstrap.sh
@@ -99,6 +105,7 @@ grep -Fq '.wh..wh..opq' guest/extract-executor.py
 grep -Fq 'EXECUTOR_ALLOW_LOCAL_NETWORK=false' guest/executor.sh
 grep -Fq 'EXECUTOR_HOST=0.0.0.0' guest/executor.sh
 grep -Fq 'BUN_FEATURE_FLAG_DISABLE_IPV6=1' guest/executor.sh
+grep -Fq 'find /workspace/executor ! -type l' guest/start.sh
 grep -Fq "grep -qx 'BUN_FEATURE_FLAG_DISABLE_IPV6=1'" internal/app/host.go
 grep -Fq 'ghcr.io/rhyssullivan/executor-selfhost:v1.5.12@sha256:' internal/config/config.go
 grep -Fq 'MCP_EXECUTOR_API_KEY' internal/app/executor.go
@@ -106,6 +113,7 @@ grep -Fq 'tools.executor.coreTools.connections.list' internal/app/executor.go
 grep -Fq '81eaedd0f5c471c7ee748990066135a684f3c962' internal/config/config.go
 grep -Fq 'upstream anchor drift' guest/patch-hermes-gated-approval.py
 grep -Fq 'Configuration is deliberately last' guest/patch-hermes-gated-approval.py
+grep -Fq 'HERMES_GATED_APPROVAL_PATCHER=/tmp/hermes-box-patch-hermes-gated-approval.py' guest/bootstrap.sh
 
 ./tests/workspace-seed.sh
 ./tests/executor-extract.sh

@@ -107,6 +107,9 @@ func TestSnapshotFailureDiscardsPartialBackup(t *testing.T) {
 	if err := application.prepareDirs(); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(application.sshKey, []byte("test key"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := application.snapshotInternal(context.Background(), "failure", true); err == nil {
 		t.Fatal("snapshotInternal succeeded")
 	}
@@ -134,6 +137,9 @@ func TestSnapshotRestartFailureRetainsCompleteBackup(t *testing.T) {
 	runner := restartFailingSnapshotRunner{t: t}
 	application := New(root, cfg, runner, io.Discard, io.Discard)
 	if err := application.prepareDirs(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(application.sshKey, []byte("test key"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := application.snapshotInternal(context.Background(), "restart-failure", true); err == nil {
@@ -228,6 +234,12 @@ func (failingSnapshotRunner) Run(_ context.Context, spec process.Spec) error {
 }
 
 func (failingSnapshotRunner) Output(_ context.Context, spec process.Spec) ([]byte, error) {
+	if spec.Name == "ssh-keygen" && containsArgument(spec.Args, "-y") {
+		return []byte("ssh-ed25519 AAAATEST\n"), nil
+	}
+	if spec.Name == "ssh-keygen" && containsArgument(spec.Args, "-lf") {
+		return []byte("256 SHA256:test test (ED25519)\n"), nil
+	}
 	if spec.Name == "smolvm" &&
 		len(spec.Args) >= 2 &&
 		spec.Args[0] == "machine" &&
@@ -269,6 +281,12 @@ func (r restartFailingSnapshotRunner) Run(_ context.Context, spec process.Spec) 
 }
 
 func (restartFailingSnapshotRunner) Output(_ context.Context, spec process.Spec) ([]byte, error) {
+	if spec.Name == "ssh-keygen" && containsArgument(spec.Args, "-y") {
+		return []byte("ssh-ed25519 AAAATEST\n"), nil
+	}
+	if spec.Name == "ssh-keygen" && containsArgument(spec.Args, "-lf") {
+		return []byte("256 SHA256:test test (ED25519)\n"), nil
+	}
 	if spec.Name == "smolvm" &&
 		len(spec.Args) >= 2 &&
 		spec.Args[0] == "machine" &&

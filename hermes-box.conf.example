@@ -8,6 +8,10 @@ HERMES_BOX_STORAGE_GB=15
 HERMES_BOX_OVERLAY_GB=6
 HERMES_BOX_NETWORK_MODE=none
 
+# Optional: use one stable external private key for this box. Keep it outside
+# backup archives (for example in 1Password) and supply the same key on restore.
+# HERMES_BOX_SSH_KEY=/secure/path/hermes-box-ed25519
+
 # Optional native Executor gateway pulled from a digest-pinned OCI image and
 # exposed on host loopback only.
 HERMES_BOX_EXECUTOR_ENABLED=false

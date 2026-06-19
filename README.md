@@ -429,7 +429,7 @@ The wrapper:
 2. Archives the merged root filesystem.
 3. Archives `/workspace`.
 4. Rejects snapshots containing tar warnings.
-5. Writes SHA-256 checksums.
+5. Records the stable SSH-key fingerprint and writes SHA-256 checksums.
 6. Restarts the machine if it was previously running.
 
 Snapshots are stored under `backups/*.hermesbox`.
@@ -457,12 +457,18 @@ Create a self-contained portable archive:
 ./bin/hermes-box package configured-agent
 ```
 
+Convert an already completed snapshot without starting its machine:
+
+```bash
+./bin/hermes-box package --snapshot backups/existing.hermesbox configured-agent
+```
+
 `package` takes a fresh consistent snapshot, then bundles:
 
+- An archive-specific `AGENTS.md` with expand, restore, and run instructions
 - The runnable Hermes Box project
 - `images/hermes-base.smolmachine`
 - The new `backups/*.hermesbox` snapshot
-- The dedicated SSH private and public keys
 - A portable `hermes-box.conf` using repository-local data directories
 
 For Executor-enabled boxes, the generated configuration preserves whether
@@ -477,9 +483,11 @@ hermes-box-portable-YYYYMMDD-HHMMSS-configured-agent.tar
 hermes-box-portable-YYYYMMDD-HHMMSS-configured-agent.tar.sha256
 ```
 
-These files include the machine SSH identity and may include Hermes OAuth
-tokens, API keys, sessions, memories, and generated work. Encrypt portable
-archives at rest.
+Portable archives intentionally exclude the SSH private and public keys. Keep
+one stable private key per box in an encrypted secret store such as 1Password;
+the same key restores every archive made by that box. The archives may still
+include Hermes OAuth tokens, API keys, sessions, memories, and generated work,
+so encrypt them at rest too.
 
 The source Mac's Keychain entries and browser sessions are not included. The
 repullable Executor runtime under `/workspace/.hermes-box-runtime` is also
@@ -496,12 +504,17 @@ reconfiguring Hermes:
 shasum -a 256 -c hermes-box-portable-*.tar.sha256
 tar -xpf hermes-box-portable-*.tar
 cd hermes-box
+printf '\nHERMES_BOX_SSH_KEY=%s\n' /secure/path/hermes-box-ed25519 >>hermes-box.conf
 ./bin/hermes-box restore backups/*.hermesbox
 ./bin/hermes-box status
 ./bin/hermes-box executor status
 ./bin/hermes-box ssh \
   'sudo -iu hermes env HERMES_HOME=/workspace/hermes-home hermes mcp test executor'
 ```
+
+The packaged `AGENTS.md` contains this recovery sequence and links back to the
+[Hermes Box repository](https://github.com/davis7dotsh/hermes-box) for the
+latest documentation and troubleshooting guidance.
 
 Host environment variables referenced by an optional `secret-env.txt` must
 still exist on the restore host. See [PORTABLE_RESTORE.md](PORTABLE_RESTORE.md).
@@ -534,6 +547,7 @@ HERMES_BOX_MEMORY_MIB=8192
 HERMES_BOX_STORAGE_GB=15
 HERMES_BOX_OVERLAY_GB=6
 HERMES_BOX_NETWORK_MODE=full
+HERMES_BOX_SSH_KEY=/secure/path/hermes-box-ed25519
 HERMES_BOX_HERMES_COMMIT=81eaedd0f5c471c7ee748990066135a684f3c962
 HERMES_BOX_EXECUTOR_ENABLED=false
 HERMES_BOX_EXECUTOR_PORT=4788
@@ -553,6 +567,11 @@ supported.
 Set `HERMES_BOX_DATA_DIR` to keep `images/`, `backups/`, and `state/` under a
 different directory. The disposable lifecycle suite uses a temporary data
 directory so it cannot replace primary recovery artifacts.
+
+Set `HERMES_BOX_SSH_KEY` to the separately stored stable private key for the
+box. Hermes Box derives its public key automatically. An explicitly configured
+key is never generated or replaced when missing, and portable archives never
+contain either key file.
 
 Optional smolvm host-secret mappings can be placed in `secret-env.txt`; use
 `secret-env.txt.example` as the template.

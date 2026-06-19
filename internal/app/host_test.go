@@ -113,7 +113,7 @@ func TestVerifyBuilderNetworkChecksRouteAndDNS(t *testing.T) {
 	}
 }
 
-func TestVerifyGuestReadsExecutorEnvironmentAsHermes(t *testing.T) {
+func TestVerifyGuestAcceptsCurrentAndLegacyExecutorLayouts(t *testing.T) {
 	runner := &recordingRunner{}
 	application := New(t.TempDir(), config.Config{ExecutorEnabled: true}, runner, io.Discard, io.Discard)
 	if err := application.verifyGuest(context.Background(), "test-box"); err != nil {
@@ -121,9 +121,11 @@ func TestVerifyGuestReadsExecutorEnvironmentAsHermes(t *testing.T) {
 	}
 	script := runner.last.Args[len(runner.last.Args)-1]
 	for _, expected := range []string{
+		"if test -L /workspace/.hermes-box-runtime/executor/current; then",
 		"executor_pid=$(sudo -u hermes sudo supervisorctl pid executor)",
 		"sudo -u hermes sh -c",
 		`/proc/$1/environ`,
+		"test -d /storage/executor-runtime",
 	} {
 		if !strings.Contains(script, expected) {
 			t.Fatalf("Executor verification does not contain %q: %s", expected, script)
@@ -148,13 +150,41 @@ func TestCreateFromArtifactPreservesPackedLayers(t *testing.T) {
 		OverlayGB:   1,
 		NetworkMode: "full",
 	}, runner, io.Discard, io.Discard)
-	if err := application.createFromArtifact(context.Background(), "test-box", "/tmp/base.smolmachine", 2223); err != nil {
+	if err := application.createFromArtifact(context.Background(), "test-box", "/tmp/base.smolmachine", 2223, false); err != nil {
 		t.Fatal(err)
 	}
 	if runner.runs[0].Name != "env" ||
 		!containsArgument(runner.runs[0].Args, "SMOLVM_PACK_CACHE_MAX_BYTES=17179869184") ||
 		!containsArgument(runner.runs[0].Args, "smolvm") {
 		t.Fatalf("unexpected artifact creation: %#v", runner.runs[0])
+	}
+}
+
+func TestCreateFromArtifactCanEnableRestoreMode(t *testing.T) {
+	dataDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dataDir, "pack"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dataDir, "pack", ".smolvm-extracted"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &artifactRunner{dataDir: dataDir}
+	application := New(t.TempDir(), config.Config{
+		CPUs: 1, MemoryMiB: 1, StorageGB: 1, OverlayGB: 1, NetworkMode: "full",
+	}, runner, io.Discard, io.Discard)
+	if err := application.createFromArtifact(
+		context.Background(),
+		"restore-box",
+		"/tmp/base.smolmachine",
+		2223,
+		true,
+	); err != nil {
+		t.Fatal(err)
+	}
+	for _, expected := range []string{"-e", "HERMES_BOX_RESTORE_MODE=true"} {
+		if !containsArgument(runner.runs[0].Args, expected) {
+			t.Fatalf("restore create args do not contain %q: %#v", expected, runner.runs[0].Args)
+		}
 	}
 }
 

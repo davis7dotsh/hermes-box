@@ -51,6 +51,13 @@ func (a *App) snapshotInternal(ctx context.Context, label string, restartAfter b
 	}()
 
 	name := a.config.MachineName
+	if err := a.requireSSHKey(ctx); err != nil {
+		return "", err
+	}
+	sshFingerprint, err := a.sshFingerprint(ctx)
+	if err != nil {
+		return "", err
+	}
 	if !a.machineExists(ctx, name) {
 		return "", fmt.Errorf("machine does not exist: %s", name)
 	}
@@ -162,12 +169,13 @@ func (a *App) snapshotInternal(ctx context.Context, label string, restartAfter b
 	machineStopped = true
 
 	manifest := fmt.Sprintf(
-		"format=%s\ncreated=%s\nmachine=%s\nsmolvm=%s\ngoos=%s\n",
+		"format=%s\ncreated=%s\nmachine=%s\nsmolvm=%s\ngoos=%s\nssh_key_fingerprint=%s\n",
 		backupFormat,
 		time.Now().UTC().Format(time.RFC3339),
 		name,
 		a.smolvmVersion(ctx),
 		goos(),
+		sshFingerprint,
 	)
 	if err := os.WriteFile(filepath.Join(backupDir, "manifest.txt"), []byte(manifest), 0o600); err != nil {
 		return "", fmt.Errorf("write backup manifest: %w", err)
@@ -205,6 +213,31 @@ func (a *App) cmdRestore(ctx context.Context, args []string) error {
 	}
 	if err := verifyBackup(backupDir); err != nil {
 		return err
+	}
+	if err := requireRegularFile(a.baseArtifact); err != nil {
+		return fmt.Errorf("restore requires the local base artifact: %s", a.baseArtifact)
+	}
+	if err := a.requireSSHKey(ctx); err != nil {
+		return err
+	}
+	manifest, err := readKeyValues(filepath.Join(backupDir, "manifest.txt"))
+	if err != nil {
+		return err
+	}
+	actualFingerprint, err := a.sshFingerprint(ctx)
+	if err != nil {
+		return err
+	}
+	if expectedFingerprint := manifest["ssh_key_fingerprint"]; expectedFingerprint != "" {
+		if actualFingerprint != expectedFingerprint {
+			return fmt.Errorf(
+				"SSH key fingerprint mismatch: backup requires %s, supplied key is %s",
+				expectedFingerprint,
+				actualFingerprint,
+			)
+		}
+	} else {
+		a.log("warning: legacy backup does not record its SSH key fingerprint")
 	}
 
 	safetyBackup := ""
@@ -289,23 +322,26 @@ func (a *App) applyBackup(ctx context.Context, name, backupDir string, port int)
 		}
 	}()
 
-	if err := waitForPort(ctx, port, 60); err != nil {
+	// A portable package can contain a base image older than the current host
+	// verifier. Before applying the snapshot, only the out-of-band smolvm guest
+	// agent must work. Full SSH, Supervisor, Hermes, Codex, and Executor health
+	// checks run after the verified snapshot has been applied and restarted.
+	if err := a.waitForMachineExec(ctx, name, 240); err != nil {
 		return err
 	}
-	if err := a.verifyLoopbackListener(ctx, port); err != nil {
-		return err
-	}
-	if err := a.waitForGuest(ctx, name, port, 240); err != nil {
-		return err
-	}
-	if err := a.run(ctx, "smolvm", "machine", "exec", "--name", name, "--", "supervisorctl", "stop", "all"); err != nil {
-		return fmt.Errorf("stop guest services before restore: %w", err)
-	}
+	_ = a.runQuiet(ctx, "smolvm", "machine", "exec", "--name", name, "--", "supervisorctl", "stop", "all")
 	transfers := [][2]string{
 		{filepath.Join(backupDir, "rootfs.tar.gz"), name + ":/tmp/hermes-box-restore-rootfs.tar.gz"},
 		{filepath.Join(backupDir, "rootfs-files.txt"), name + ":/tmp/hermes-box-restore-rootfs-files.txt"},
 		{filepath.Join(backupDir, "workspace.tar.gz"), name + ":/tmp/hermes-box-restore-workspace.tar.gz"},
 		{filepath.Join(a.root, "guest", "restore.sh"), name + ":/tmp/hermes-box-restore.sh"},
+		{filepath.Join(a.root, "guest", "entrypoint.sh"), name + ":/tmp/hermes-box-current-entrypoint.sh"},
+		{filepath.Join(a.root, "guest", "start.sh"), name + ":/tmp/hermes-box-current-start.sh"},
+		{filepath.Join(a.root, "guest", "executor.sh"), name + ":/tmp/hermes-box-current-executor.sh"},
+		{filepath.Join(a.root, "guest", "extract-executor.py"), name + ":/tmp/hermes-box-current-extract-executor.py"},
+		{filepath.Join(a.root, "guest", "workspace-seed.sh"), name + ":/tmp/hermes-box-current-workspace-seed.sh"},
+		{filepath.Join(a.root, "guest", "supervisord.conf"), name + ":/tmp/hermes-box-current-supervisord.conf"},
+		{a.sshPublicKey, name + ":/tmp/hermes-box-restore-authorized-key.pub"},
 	}
 	for _, transfer := range transfers {
 		if err := a.run(ctx, "smolvm", "machine", "cp", transfer[0], transfer[1]); err != nil {

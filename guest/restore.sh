@@ -4,6 +4,7 @@ set -euo pipefail
 rootfs=/tmp/hermes-box-restore-rootfs.tar.gz
 rootfs_files=/tmp/hermes-box-restore-rootfs-files.txt
 workspace=/tmp/hermes-box-restore-workspace.tar.gz
+authorized_key=/tmp/hermes-box-restore-authorized-key.pub
 
 tar --numeric-owner -C / -xzpf "$rootfs"
 python3 - "$rootfs_files" <<'PY'
@@ -56,7 +57,51 @@ for entry in os.scandir("/"):
         os.unlink(root)
 PY
 
+# The private SSH identity is supplied separately from the backup. Keep that
+# destination key authoritative even when restoring a rootfs created with an
+# older key.
+install -d -o boxadmin -g boxadmin -m 0700 /home/boxadmin/.ssh
+install -o boxadmin -g boxadmin -m 0600 \
+  "$authorized_key" /home/boxadmin/.ssh/authorized_keys
+
+# Host-managed boot and service files move forward with the restoring Hermes
+# Box checkout. This lets current code recover older snapshots without booting
+# their obsolete Supervisor or Executor layout first.
+install -o root -g root -m 0755 \
+  /tmp/hermes-box-current-start.sh \
+  /usr/local/sbin/hermes-box-start
+install -o root -g root -m 0755 \
+  /tmp/hermes-box-current-entrypoint.sh \
+  /usr/local/sbin/hermes-box-entrypoint
+install -o root -g root -m 0755 \
+  /tmp/hermes-box-current-executor.sh \
+  /usr/local/sbin/hermes-box-executor
+install -o root -g root -m 0755 \
+  /tmp/hermes-box-current-extract-executor.py \
+  /usr/local/sbin/hermes-box-extract-executor
+install -o root -g root -m 0755 \
+  /tmp/hermes-box-current-workspace-seed.sh \
+  /usr/local/sbin/hermes-box-workspace-seed
+install -o root -g root -m 0644 \
+  /tmp/hermes-box-current-supervisord.conf \
+  /etc/supervisor/supervisord.conf
+
 find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
-tar --numeric-owner -C /workspace -xzpf "$workspace"
-rm -f "$rootfs" "$rootfs_files" "$workspace"
+tar \
+  --numeric-owner \
+  --exclude=./codex-home/tmp \
+  -C /workspace \
+  -xzpf "$workspace"
+rm -f \
+  "$rootfs" \
+  "$rootfs_files" \
+  "$workspace" \
+  "$authorized_key" \
+  /tmp/hermes-box-current-entrypoint.sh \
+  /tmp/hermes-box-current-start.sh \
+  /tmp/hermes-box-current-executor.sh \
+  /tmp/hermes-box-current-extract-executor.py \
+  /tmp/hermes-box-current-workspace-seed.sh \
+  /tmp/hermes-box-current-supervisord.conf
+touch /var/lib/hermes-box/restore-ready
 sync

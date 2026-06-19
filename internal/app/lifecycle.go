@@ -70,6 +70,7 @@ func (a *App) cmdInit(ctx context.Context, args []string) error {
 		{filepath.Join(a.root, "guest", "bootstrap.sh"), "/tmp/hermes-box-bootstrap.sh"},
 		{filepath.Join(a.root, "guest", "install-node.sh"), "/tmp/hermes-box-install-node.sh"},
 		{filepath.Join(a.root, "guest", "start.sh"), "/tmp/hermes-box-start.sh"},
+		{filepath.Join(a.root, "guest", "entrypoint.sh"), "/tmp/hermes-box-entrypoint.sh"},
 		{filepath.Join(a.root, "guest", "executor.sh"), "/tmp/hermes-box-executor.sh"},
 		{filepath.Join(a.root, "guest", "extract-executor.py"), "/tmp/hermes-box-extract-executor.py"},
 		{filepath.Join(a.root, "guest", "hermes_gated_approval.py"), "/tmp/hermes-box-hermes-gated-approval.py"},
@@ -79,7 +80,7 @@ func (a *App) cmdInit(ctx context.Context, args []string) error {
 		{filepath.Join(a.root, "guest", "boxadmin.bash_profile"), "/tmp/hermes-box-boxadmin.bash_profile"},
 		{filepath.Join(a.root, "guest", "hermes-box.sudoers"), "/tmp/hermes-box-sudoers"},
 		{filepath.Join(a.root, "guest", "supervisord.conf"), "/tmp/hermes-box-supervisord.conf"},
-		{a.sshKey + ".pub", "/tmp/hermes-box-authorized-key.pub"},
+		{a.sshPublicKey, "/tmp/hermes-box-authorized-key.pub"},
 	}
 	for _, file := range files {
 		if err := a.run(ctx, "smolvm", "machine", "cp", file[0], a.config.BuilderName+":"+file[1]); err != nil {
@@ -128,7 +129,7 @@ func (a *App) cmdInit(ctx context.Context, args []string) error {
 		return fmt.Errorf("install base artifact: %w", err)
 	}
 
-	if err := a.createFromArtifact(ctx, a.config.MachineName, a.baseArtifact, a.config.SSHPort); err != nil {
+	if err := a.createFromArtifact(ctx, a.config.MachineName, a.baseArtifact, a.config.SSHPort, false); err != nil {
 		return err
 	}
 	if err := a.clearKnownHost(ctx, a.config.SSHPort); err != nil {
