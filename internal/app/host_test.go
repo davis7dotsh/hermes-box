@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -52,6 +53,24 @@ type machineListRunner struct {
 type blockingMachineExecRunner struct {
 	probes      int
 	hadDeadline bool
+}
+
+type testListener struct {
+	closed   bool
+	closeErr error
+}
+
+func (*testListener) Accept() (net.Conn, error) {
+	return nil, errors.New("test listener does not accept connections")
+}
+
+func (l *testListener) Close() error {
+	l.closed = true
+	return l.closeErr
+}
+
+func (*testListener) Addr() net.Addr {
+	return &net.TCPAddr{}
 }
 
 func (r *recordingRunner) Run(_ context.Context, spec process.Spec) error {
@@ -509,6 +528,141 @@ func TestVerifyPortAvailableRejectsOccupiedLoopbackPort(t *testing.T) {
 	port := listener.Addr().(*net.TCPAddr).Port
 	if err := verifyPortAvailable(port); err == nil {
 		t.Fatalf("verifyPortAvailable accepted occupied port %d", port)
+	}
+}
+
+func TestVerifyPortAvailableSkipsOnlyUnavailableIPv6(t *testing.T) {
+	for _, ipv6Err := range []error{
+		&net.OpError{Op: "listen", Net: "tcp6", Err: syscall.EAFNOSUPPORT},
+		fmt.Errorf("wrapped protocol error: %w", syscall.EPROTONOSUPPORT),
+		&net.OpError{Op: "listen", Net: "tcp6", Err: syscall.EADDRNOTAVAIL},
+	} {
+		t.Run(ipv6Err.Error(), func(t *testing.T) {
+			ipv4 := &testListener{}
+			var networks []string
+			err := verifyPortAvailableWith(2223, func(network, _ string) (net.Listener, error) {
+				networks = append(networks, network)
+				if network == "tcp6" {
+					return nil, ipv6Err
+				}
+				return ipv4, nil
+			})
+			if err != nil {
+				t.Fatalf("verifyPortAvailableWith rejected unavailable IPv6: %v", err)
+			}
+			if !ipv4.closed {
+				t.Fatal("IPv4 preflight listener was not closed")
+			}
+			if got := strings.Join(networks, ","); got != "tcp4,tcp6" {
+				t.Fatalf("listen networks = %q", got)
+			}
+		})
+	}
+}
+
+func TestVerifyPortAvailableReportsIPv6ConflictsAndUnexpectedErrors(t *testing.T) {
+	for _, testCase := range []struct {
+		name string
+		err  error
+	}{
+		{name: "address in use", err: syscall.EADDRINUSE},
+		{name: "permission denied", err: syscall.EACCES},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			ipv4 := &testListener{}
+			err := verifyPortAvailableWith(2223, func(network, _ string) (net.Listener, error) {
+				if network == "tcp6" {
+					return nil, &net.OpError{Op: "listen", Net: network, Err: testCase.err}
+				}
+				return ipv4, nil
+			})
+			if !errors.Is(err, testCase.err) {
+				t.Fatalf("verifyPortAvailableWith error = %v, want %v", err, testCase.err)
+			}
+			if !strings.Contains(err.Error(), "[::1]:2223") {
+				t.Fatalf("IPv6 error does not identify the listener address: %v", err)
+			}
+			if !ipv4.closed {
+				t.Fatal("IPv4 preflight listener was not closed")
+			}
+		})
+	}
+}
+
+func TestVerifyPortAvailableReportsListenerCloseFailure(t *testing.T) {
+	closeErr := errors.New("close failed")
+	listener := &testListener{closeErr: closeErr}
+	listenCalls := 0
+	err := verifyPortAvailableWith(2223, func(_, _ string) (net.Listener, error) {
+		listenCalls++
+		return listener, nil
+	})
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("verifyPortAvailableWith error = %v, want %v", err, closeErr)
+	}
+	if !listener.closed {
+		t.Fatal("preflight listener Close was not called")
+	}
+	if listenCalls != 1 {
+		t.Fatalf("listen calls after Close failure = %d, want 1", listenCalls)
+	}
+	if !strings.Contains(err.Error(), "127.0.0.1:2223") {
+		t.Fatalf("Close error does not identify the listener address: %v", err)
+	}
+}
+
+func TestVerifyPortAvailableClosesBothSupportedListeners(t *testing.T) {
+	ipv4 := &testListener{}
+	ipv6 := &testListener{}
+	err := verifyPortAvailableWith(2223, func(network, _ string) (net.Listener, error) {
+		if network == "tcp6" {
+			return ipv6, nil
+		}
+		return ipv4, nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ipv4.closed || !ipv6.closed {
+		t.Fatalf("closed listeners: IPv4=%t IPv6=%t", ipv4.closed, ipv6.closed)
+	}
+}
+
+func TestVerifyPortAvailableReportsIPv6ListenerCloseFailure(t *testing.T) {
+	closeErr := errors.New("IPv6 close failed")
+	ipv4 := &testListener{}
+	ipv6 := &testListener{closeErr: closeErr}
+	err := verifyPortAvailableWith(2223, func(network, _ string) (net.Listener, error) {
+		if network == "tcp6" {
+			return ipv6, nil
+		}
+		return ipv4, nil
+	})
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("verifyPortAvailableWith error = %v, want %v", err, closeErr)
+	}
+	if !ipv4.closed || !ipv6.closed {
+		t.Fatalf("closed listeners: IPv4=%t IPv6=%t", ipv4.closed, ipv6.closed)
+	}
+	if !strings.Contains(err.Error(), "[::1]:2223") {
+		t.Fatalf("IPv6 Close error does not identify the listener address: %v", err)
+	}
+}
+
+func TestVerifyPortAvailableDoesNotSkipUnavailableIPv4(t *testing.T) {
+	listenCalls := 0
+	err := verifyPortAvailableWith(2223, func(_, _ string) (net.Listener, error) {
+		listenCalls++
+		return nil, &net.OpError{Op: "listen", Net: "tcp4", Err: syscall.EADDRNOTAVAIL}
+	})
+	if !errors.Is(err, syscall.EADDRNOTAVAIL) {
+		t.Fatalf("verifyPortAvailableWith error = %v, want %v", err, syscall.EADDRNOTAVAIL)
+	}
+	if listenCalls != 1 {
+		t.Fatalf("listen calls after IPv4 failure = %d, want 1", listenCalls)
+	}
+	if !strings.Contains(err.Error(), "127.0.0.1:2223") {
+		t.Fatalf("IPv4 error does not identify the listener address: %v", err)
 	}
 }
 

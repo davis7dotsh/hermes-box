@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/davis7dotsh/hermes-box/internal/config"
@@ -597,6 +598,13 @@ func verifyDirectoryWritable(directory string) error {
 }
 
 func verifyPortAvailable(port int) error {
+	return verifyPortAvailableWith(port, net.Listen)
+}
+
+func verifyPortAvailableWith(
+	port int,
+	listen func(network, address string) (net.Listener, error),
+) error {
 	for _, target := range []struct {
 		network string
 		address string
@@ -604,15 +612,29 @@ func verifyPortAvailable(port int) error {
 		{network: "tcp4", address: net.JoinHostPort("127.0.0.1", strconv.Itoa(port))},
 		{network: "tcp6", address: net.JoinHostPort("::1", strconv.Itoa(port))},
 	} {
-		listener, err := net.Listen(target.network, target.address)
+		listener, err := listen(target.network, target.address)
 		if err != nil {
+			if target.network == "tcp6" && ipv6LoopbackUnavailable(err) {
+				continue
+			}
 			return fmt.Errorf("port %d is unavailable on host loopback %s: %w", port, target.address, err)
 		}
 		if err := listener.Close(); err != nil {
-			return fmt.Errorf("release port %d preflight listener: %w", port, err)
+			return fmt.Errorf(
+				"release port %d preflight listener on host loopback %s: %w",
+				port,
+				target.address,
+				err,
+			)
 		}
 	}
 	return nil
+}
+
+func ipv6LoopbackUnavailable(err error) bool {
+	return errors.Is(err, syscall.EAFNOSUPPORT) ||
+		errors.Is(err, syscall.EPROTONOSUPPORT) ||
+		errors.Is(err, syscall.EADDRNOTAVAIL)
 }
 
 func (a *App) stopNamedMachine(ctx context.Context, name string) error {
