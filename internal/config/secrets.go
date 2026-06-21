@@ -15,7 +15,7 @@ func ReadSecretMappings(path string) ([]string, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open secret mappings: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	var mappings []string
 	scanner := bufio.NewScanner(file)

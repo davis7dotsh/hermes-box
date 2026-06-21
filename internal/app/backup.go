@@ -378,7 +378,7 @@ func copyFileWithChecksum(
 	if err != nil {
 		return "", fmt.Errorf("open %s: %w", filepath.Base(source), err)
 	}
-	defer input.Close()
+	defer func() { _ = input.Close() }()
 	info, err := input.Stat()
 	if err != nil {
 		return "", fmt.Errorf("inspect %s: %w", filepath.Base(source), err)
@@ -1045,7 +1045,7 @@ func archiveFileNamesContext(ctx context.Context, path string) ([]string, error)
 	if err != nil {
 		return nil, err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	compressed, err := gzip.NewReader(contextReader{ctx: ctx, reader: file})
 	if err != nil {
 		return nil, err

@@ -156,18 +156,6 @@ func (a *App) createPortablePackageContext(
 	)
 }
 
-func (a *App) createPortablePackageFromVerifiedBackup(
-	backupDir string,
-	label string,
-) (string, error) {
-	return a.createPortablePackageFromVerifiedBackupContext(
-		context.Background(),
-		backupDir,
-		filepath.Base(backupDir),
-		label,
-	)
-}
-
 func (a *App) createPortablePackageFromVerifiedBackupContext(
 	ctx context.Context,
 	backupDir,
