@@ -66,6 +66,9 @@ func TestLoadExecutorDefaults(t *testing.T) {
 	if cfg.HermesCommit != defaultHermesCommit {
 		t.Fatalf("HermesCommit = %q", cfg.HermesCommit)
 	}
+	if cfg.NetworkMode != "full" {
+		t.Fatalf("NetworkMode = %q, want literal default %q", cfg.NetworkMode, "full")
+	}
 }
 
 func TestLoadRejectsUnpinnedExecutorImage(t *testing.T) {
@@ -183,6 +186,68 @@ func TestLoadRejectsShellCode(t *testing.T) {
 
 	if _, err := Load(root, nil); err == nil {
 		t.Fatal("Load succeeded with shell code")
+	}
+}
+
+func TestLoadRejectsUnknownHermesBoxSetting(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(root, "hermes-box.conf"),
+		[]byte("HERMES_BOX_NETWORK_MOD=none\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := Load(root, nil); err == nil {
+		t.Fatal("Load accepted an unknown HERMES_BOX_* setting")
+	}
+}
+
+func TestLoadIgnoresUnrelatedConfigAssignments(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(root, "hermes-box.conf"),
+		[]byte("EDITOR=vim\nHERMES_BOX_SSH_PORT=2444\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(root, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.SSHPort != 2444 {
+		t.Fatalf("SSHPort = %d", cfg.SSHPort)
+	}
+}
+
+func TestLoadRejectsUnknownHermesBoxEnvironmentSetting(t *testing.T) {
+	if _, err := Load(t.TempDir(), []string{
+		"HERMES_BOX_NETWORK_MOD=none",
+	}); err == nil {
+		t.Fatal("Load accepted an unknown HERMES_BOX_* environment setting")
+	}
+}
+
+func TestLoadAllowsControlAndUnrelatedEnvironmentSettings(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(
+		filepath.Join(root, "secret-env.txt"),
+		[]byte("TELEGRAM_BOT_TOKEN=HERMES_BOX_TELEGRAM_BOT_TOKEN\n"),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(root, []string{
+		"EDITOR=vim",
+		"HERMES_BOX_CONFIG=",
+		"HERMES_BOX_E2E=1",
+		"HERMES_BOX_PROJECT_ROOT=/tmp/hermes-box",
+		"HERMES_BOX_TELEGRAM_BOT_TOKEN=secret",
+	}); err != nil {
+		t.Fatal(err)
 	}
 }
 

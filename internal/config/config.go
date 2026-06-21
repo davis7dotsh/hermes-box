@@ -17,7 +17,7 @@ const (
 	defaultMemoryMiB     = 8192
 	defaultStorageGB     = 15
 	defaultOverlayGB     = 6
-	defaultNetworkMode   = "none"
+	defaultNetworkMode   = "full"
 	defaultHermesCommit  = "81eaedd0f5c471c7ee748990066135a684f3c962"
 	defaultExecutorPort  = 4788
 	defaultExecutorImage = "ghcr.io/rhyssullivan/executor-selfhost:v1.5.12@sha256:e40b2179c005b3124e794e9a8505341db46d0a9a1631e7f3fdcd023462ecf70b"
@@ -93,6 +93,12 @@ var keys = map[string]func(*Config, string) error{
 	},
 }
 
+var controlEnvironmentKeys = map[string]struct{}{
+	"HERMES_BOX_CONFIG":       {},
+	"HERMES_BOX_E2E":          {},
+	"HERMES_BOX_PROJECT_ROOT": {},
+}
+
 func Load(projectRoot string, environ []string) (Config, error) {
 	cfg := Config{
 		MachineName:   defaultMachineName,
@@ -109,6 +115,26 @@ func Load(projectRoot string, environ []string) (Config, error) {
 	}
 
 	env := environment(environ)
+	secretMappings, err := ReadSecretMappings(filepath.Join(projectRoot, "secret-env.txt"))
+	if err != nil {
+		return Config{}, err
+	}
+	secretHostKeys := secretHostEnvironmentKeys(secretMappings)
+	for key := range env {
+		if !strings.HasPrefix(key, "HERMES_BOX_") {
+			continue
+		}
+		if _, known := keys[key]; known {
+			continue
+		}
+		if _, control := controlEnvironmentKeys[key]; control {
+			continue
+		}
+		if _, secretHost := secretHostKeys[key]; secretHost {
+			continue
+		}
+		return Config{}, fmt.Errorf("unknown Hermes Box environment setting %q", key)
+	}
 	cfg.ConfigFile = filepath.Join(projectRoot, "hermes-box.conf")
 	if value, ok := env["HERMES_BOX_CONFIG"]; ok && value != "" {
 		cfg.ConfigFile = value
@@ -240,6 +266,14 @@ func loadFile(cfg *Config, path string) error {
 		}
 		setter, known := keys[key]
 		if !known {
+			if strings.HasPrefix(key, "HERMES_BOX_") {
+				return fmt.Errorf(
+					"%s:%d: unknown Hermes Box setting %q",
+					path,
+					lineNumber,
+					key,
+				)
+			}
 			continue
 		}
 		if err := setter(cfg, value); err != nil {

@@ -3,15 +3,52 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/davis7dotsh/hermes-box/internal/config"
+	"github.com/davis7dotsh/hermes-box/internal/process"
 )
+
+type executorAutoStartRunner struct {
+	startDeadline  time.Time
+	sawDeadline    bool
+	probeCalls     int
+	unboundedProbe bool
+}
+
+func (r *executorAutoStartRunner) Run(ctx context.Context, spec process.Spec) error {
+	if spec.Name == "smolvm" && containsArgument(spec.Args, "start") {
+		r.startDeadline, r.sawDeadline = ctx.Deadline()
+		return errors.New("stop after capturing Executor auto-start deadline")
+	}
+	return nil
+}
+
+func (r *executorAutoStartRunner) Output(ctx context.Context, spec process.Spec) ([]byte, error) {
+	if containsArgument(spec.Args, "list") {
+		r.recordProbeContext(ctx)
+		return []byte(`[{"name":"test-box"}]`), nil
+	}
+	if containsArgument(spec.Args, "status") {
+		r.recordProbeContext(ctx)
+		return []byte(`{"state":"stopped"}`), nil
+	}
+	return nil, nil
+}
+
+func (r *executorAutoStartRunner) recordProbeContext(ctx context.Context) {
+	r.probeCalls++
+	if _, ok := ctx.Deadline(); !ok {
+		r.unboundedProbe = true
+	}
+}
 
 func TestExecutorMCPClientInitializesListsAndExecutes(t *testing.T) {
 	t.Helper()
@@ -136,6 +173,74 @@ func TestParseExecutorLogOptions(t *testing.T) {
 	}
 }
 
+func TestParseExecutorStatusOptions(t *testing.T) {
+	jsonOutput, sizes, err := parseExecutorStatusOptions([]string{"--sizes", "--json"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !jsonOutput || !sizes {
+		t.Fatalf("json = %t, sizes = %t", jsonOutput, sizes)
+	}
+}
+
+func TestParseExecutorStatusOptionsRejectsDuplicatesAndUnknowns(t *testing.T) {
+	for _, args := range [][]string{{"--sizes", "--sizes"}, {"--json", "--json"}, {"--fast"}} {
+		if _, _, err := parseExecutorStatusOptions(args); err == nil {
+			t.Fatalf("accepted status options %v", args)
+		}
+	}
+}
+
+func TestExecutorRuntimeMetadataSkipsRecursiveSizesByDefault(t *testing.T) {
+	runner := &recordingRunner{}
+	application := New(t.TempDir(), config.Config{MachineName: "test-box"}, runner, io.Discard, io.Discard)
+	if _, err := application.executorRuntimeMetadata(context.Background(), false); err != nil {
+		t.Fatal(err)
+	}
+	script := runner.last.Args[len(runner.last.Args)-1]
+	if strings.Contains(script, "du -sh") || strings.Contains(script, "runtime_size=") {
+		t.Fatalf("default metadata performs a recursive size scan: %s", script)
+	}
+
+	if _, err := application.executorRuntimeMetadata(context.Background(), true); err != nil {
+		t.Fatal(err)
+	}
+	script = runner.last.Args[len(runner.last.Args)-1]
+	for _, expected := range []string{"timeout --signal=TERM", "runtime_size=", "data_size=", "du -sh"} {
+		if !strings.Contains(script, expected) {
+			t.Fatalf("sized metadata does not contain %q: %s", expected, script)
+		}
+	}
+}
+
+func TestEnsureExecutorReadyUsesCentralExecutorStartupDeadline(t *testing.T) {
+	runner := &executorAutoStartRunner{}
+	application := New(t.TempDir(), config.Config{
+		MachineName:     "test-box",
+		SSHPort:         2223,
+		ExecutorEnabled: true,
+		ExecutorPort:    4788,
+	}, runner, io.Discard, io.Discard)
+
+	if err := application.ensureExecutorReady(context.Background()); err == nil {
+		t.Fatal("ensureExecutorReady succeeded despite injected start failure")
+	}
+	if !runner.sawDeadline {
+		t.Fatal("Executor auto-start did not receive a startup deadline")
+	}
+	if runner.probeCalls != 4 || runner.unboundedProbe {
+		t.Fatalf(
+			"Executor auto-start probe calls = %d, unbounded = %t; want four bounded probes",
+			runner.probeCalls,
+			runner.unboundedProbe,
+		)
+	}
+	remaining := time.Until(runner.startDeadline)
+	if remaining < 2*time.Hour-5*time.Second || remaining > 2*time.Hour {
+		t.Fatalf("Executor auto-start deadline remaining = %s, want approximately 2h", remaining)
+	}
+}
+
 func TestWriteExecutorStatusDoesNotExposeSecrets(t *testing.T) {
 	var output strings.Builder
 	status := executorStatus{
@@ -175,6 +280,46 @@ func TestWriteExecutorStatusReportsUnavailableListener(t *testing.T) {
 	if !strings.Contains(output.String(), "Health:     unhealthy") ||
 		!strings.Contains(output.String(), status.HealthError) {
 		t.Fatalf("unavailable status output = %q", output.String())
+	}
+}
+
+func TestWriteExecutorStatusSeparatesMetadataFailureFromHealth(t *testing.T) {
+	var output strings.Builder
+	status := executorStatus{
+		Enabled: true, Machine: "box", State: "running", URL: "http://localhost:4788",
+		Healthy: true, MetadataError: "size scan timed out",
+	}
+	if err := writeExecutorStatus(&output, status, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Health:     healthy") ||
+		!strings.Contains(output.String(), "Metadata err: size scan timed out") ||
+		strings.Contains(output.String(), "Health err:") {
+		t.Fatalf("metadata failure status output = %q", output.String())
+	}
+}
+
+func TestWriteExecutorStatusShowsSizesOnlyWhenRequestedMetadataExists(t *testing.T) {
+	status := executorStatus{
+		Enabled: true, Machine: "box", State: "running", URL: "http://localhost:4788",
+		Healthy: true, RuntimeSize: "2.5G", DataSize: "12M",
+	}
+	var output strings.Builder
+	if err := writeExecutorStatus(&output, status, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(output.String(), "Disk:       runtime 2.5G, data 12M") {
+		t.Fatalf("sized status output = %q", output.String())
+	}
+
+	output.Reset()
+	status.RuntimeSize = ""
+	status.DataSize = ""
+	if err := writeExecutorStatus(&output, status, true); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), "runtimeSize") || strings.Contains(output.String(), "dataSize") {
+		t.Fatalf("default JSON status exposed empty sizes: %q", output.String())
 	}
 }
 

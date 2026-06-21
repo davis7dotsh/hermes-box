@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 
@@ -171,7 +172,125 @@ func (a *App) withLock(fn func() error) error {
 		return fmt.Errorf("another Hermes Box operation is in progress (%s)", a.lockPath)
 	}
 	defer syscall.Flock(int(lock.Fd()), syscall.LOCK_UN)
+	a.reapStaleOperationArtifacts()
 	return fn()
+}
+
+func (a *App) reapStaleOperationArtifacts() {
+	a.reapStaleRestoreBackups()
+	for _, temporary := range []struct {
+		prefix string
+		suffix string
+	}{
+		{prefix: ".hermes-box-portable-", suffix: ".tar.tmp"},
+		{prefix: ".hermes-box-portable-", suffix: ".sha256.tmp"},
+	} {
+		entries, err := os.ReadDir(a.backupsDir)
+		if err != nil {
+			a.log("warning: could not scan stale portable artifacts: %v", err)
+			continue
+		}
+		for _, entry := range entries {
+			if !generatedArtifactName(entry.Name(), temporary.prefix, temporary.suffix) {
+				continue
+			}
+			path := filepath.Join(a.backupsDir, entry.Name())
+			info, err := os.Lstat(path)
+			if err != nil {
+				if !os.IsNotExist(err) {
+					a.log("warning: could not inspect stale portable artifact %s: %v", path, err)
+				}
+				continue
+			}
+			if !info.Mode().IsRegular() {
+				continue
+			}
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				a.log("warning: could not remove stale portable artifact %s: %v", path, err)
+			}
+		}
+	}
+}
+
+func (a *App) reapStaleRestoreBackups() {
+	entries, err := os.ReadDir(a.stateDir)
+	if err != nil {
+		a.log("warning: could not scan stale restore backups: %v", err)
+		return
+	}
+	allowed := make(map[string]bool, len(backupFiles)+1)
+	for _, name := range append(append([]string{}, backupFiles...), "SHA256SUMS") {
+		allowed[name] = true
+	}
+	for _, entry := range entries {
+		if !generatedArtifactName(entry.Name(), ".restore-backup-", "") {
+			continue
+		}
+		path := filepath.Join(a.stateDir, entry.Name())
+		info, err := os.Lstat(path)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				a.log("warning: could not inspect stale restore backup %s: %v", path, err)
+			}
+			continue
+		}
+		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+			continue
+		}
+		children, err := os.ReadDir(path)
+		if err != nil {
+			a.log("warning: could not inspect stale restore backup %s: %v", path, err)
+			continue
+		}
+		safe := true
+		for _, child := range children {
+			if !allowed[child.Name()] {
+				safe = false
+				break
+			}
+			childInfo, err := os.Lstat(filepath.Join(path, child.Name()))
+			if err != nil || !childInfo.Mode().IsRegular() {
+				safe = false
+				break
+			}
+		}
+		if !safe {
+			continue
+		}
+		current, err := os.Lstat(path)
+		if err != nil || !os.SameFile(info, current) {
+			continue
+		}
+		if err := os.Chmod(path, 0o700); err != nil {
+			a.log("warning: could not unlock stale restore backup %s: %v", path, err)
+			continue
+		}
+		removeFailed := false
+		for _, child := range children {
+			if err := os.Remove(filepath.Join(path, child.Name())); err != nil && !os.IsNotExist(err) {
+				a.log("warning: could not remove stale restore file %s: %v", child.Name(), err)
+				removeFailed = true
+				break
+			}
+		}
+		if !removeFailed {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				a.log("warning: could not remove stale restore backup %s: %v", path, err)
+			}
+		}
+	}
+}
+
+func generatedArtifactName(name, prefix, suffix string) bool {
+	if !strings.HasPrefix(name, prefix) || !strings.HasSuffix(name, suffix) {
+		return false
+	}
+	generated := name[len(prefix) : len(name)-len(suffix)]
+	if len(generated) == 0 || len(generated) > 10 || len(generated) > 1 && generated[0] == '0' {
+		return false
+	}
+	_, err := strconv.ParseUint(generated, 10, 32)
+	return err == nil
 }
 
 func (a *App) run(ctx context.Context, name string, args ...string) error {
@@ -207,7 +326,7 @@ Commands:
   package [LABEL]          Snapshot and create a portable restore archive
   package --snapshot BACKUP [LABEL]
                            Package an existing verified snapshot
-  restore BACKUP           Verify in a temporary box, then restore safely
+  restore BACKUP           Restore directly if fresh; candidate-swap if replacing
   destroy --force          Delete VMs but retain keys, images, and backups
   help                     Show this help
 `, a.config.SSHPort)

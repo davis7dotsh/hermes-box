@@ -21,16 +21,24 @@ Create it from a configured Hermes Box:
 ```
 
 The command writes the `.tar` archive and its `.sha256` checksum under
-`backups/`. Copy both files to the destination host.
+`backups/`. Copy both files together to encrypted, off-host storage before
+moving them to the destination host.
 
 Requirements:
 
-- An ARM64 host supported by smolvm
+- A macOS ARM64 host
 - smolvm 1.0.4
 - Go 1.24 or newer
 - `shasum`, `ssh`, `ssh-keygen`, and `lsof`
 - Enough free space for a 15 GiB VM
 - Outbound network access to repull the pinned Executor runtime when enabled
+
+If Go is missing or older than 1.24, install a supported macOS ARM64 release
+from <https://go.dev/dl/>. If smolvm is missing or not exactly 1.0.4, install
+the official Darwin ARM64 asset from the
+[v1.0.4 release](https://github.com/smol-machines/smolvm/releases/tag/v1.0.4).
+Rerun the requirement probes, then resume at the checksum command below; do not
+create or replace a VM until they pass.
 
 Restore:
 
@@ -42,10 +50,15 @@ chmod 600 /secure/path/hermes-box-ed25519 images/hermes-base.smolmachine
 printf '\nHERMES_BOX_SSH_KEY=%s\n' /secure/path/hermes-box-ed25519 >>hermes-box.conf
 ./bin/hermes-box restore backups/*.hermesbox
 ./bin/hermes-box status
+./bin/hermes-box ssh
+```
+
+If Executor is enabled in `hermes-box.conf`, also run:
+
+```bash
 ./bin/hermes-box executor status
 ./bin/hermes-box ssh \
   'sudo -iu hermes env HERMES_HOME=/workspace/hermes-home hermes mcp test executor'
-./bin/hermes-box ssh
 ```
 
 Retrieve the same stable private key used to create the source box from an
@@ -59,6 +72,12 @@ The packaged configuration uses repository-local `images/`, `backups/`, and
 Change `HERMES_BOX_MACHINE_NAME`, `HERMES_BOX_BUILDER_NAME`,
 `HERMES_BOX_SSH_PORT`, or `HERMES_BOX_EXECUTOR_PORT` before restoring if any
 would collide on the destination host.
+
+If the target machine name does not exist, restore creates it directly and
+runs one complete validation pass. If that validation fails, Hermes Box
+deletes only the machine it just created. When replacing an existing machine,
+restore retains the safer two-phase flow: safety snapshot, temporary candidate
+validation, replacement, and rollback on failure.
 
 Hermes authentication, configuration, sessions, memories, skills, and work are
 restored from the snapshot. No Hermes setup is required afterward. If the
@@ -76,8 +95,8 @@ Mac, create a destination-local API key in the restored portal and run:
 ./bin/hermes-box executor mcp-test
 ```
 
-Keep the archive encrypted at rest. Possession of it grants access to the
-restored Hermes state and its dedicated SSH identity.
+Keep the archive encrypted at rest. It contains the restored Hermes state;
+the archive plus the separately stored private key grants SSH access to it.
 
 The Go host CLI remains compatible with `hermes-box-v2` snapshot directories
 created by the earlier Bash wrapper.

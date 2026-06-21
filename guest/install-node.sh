@@ -26,7 +26,18 @@ temporary_dir=$(mktemp -d /tmp/hermes-box-node.XXXXXX)
 trap 'rm -rf -- "$temporary_dir"' EXIT
 
 release_url=https://nodejs.org/dist/latest-v${node_major}.x
-curl -fsSL --retry 3 "$release_url/SHASUMS256.txt" \
+download_curl_args=(
+  --proto '=https'
+  --tlsv1.2
+  -fsSL
+  --connect-timeout 15
+  --max-time 600
+  --retry 5
+  --retry-delay 2
+  --retry-max-time 600
+  --retry-all-errors
+)
+curl "${download_curl_args[@]}" "$release_url/SHASUMS256.txt" \
   -o "$temporary_dir/SHASUMS256.txt"
 
 node_archive=$(
@@ -42,7 +53,7 @@ if [[ -z $node_archive ]]; then
   exit 1
 fi
 
-curl -fsSL --retry 3 "$release_url/$node_archive" \
+curl "${download_curl_args[@]}" "$release_url/$node_archive" \
   -o "$temporary_dir/$node_archive"
 (
   cd "$temporary_dir"

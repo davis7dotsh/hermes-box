@@ -1,4 +1,5 @@
-# Copy to hermes-box.conf to override defaults.
+# Copy to hermes-box.conf to override defaults. Unknown HERMES_BOX_* keys are
+# rejected so configuration typos cannot silently change behavior.
 HERMES_BOX_MACHINE_NAME=hermes-box
 HERMES_BOX_BUILDER_NAME=hermes-builder
 HERMES_BOX_SSH_PORT=2222
@@ -6,7 +7,7 @@ HERMES_BOX_CPUS=4
 HERMES_BOX_MEMORY_MIB=8192
 HERMES_BOX_STORAGE_GB=15
 HERMES_BOX_OVERLAY_GB=6
-HERMES_BOX_NETWORK_MODE=none
+HERMES_BOX_NETWORK_MODE=full
 
 # Optional: use one stable external private key for this box. Keep it outside
 # backup archives (for example in 1Password) and supply the same key on restore.
