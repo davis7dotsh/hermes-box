@@ -82,8 +82,9 @@ steps that require the user.
 5. Give the user the state-aware handoff printed by `init`: run `hermes auth add
    openai-codex --type oauth` before `hermes model` so a ChatGPT/Codex inference
    choice reuses that credential instead of starting a second device flow. Both
-   are separate from `codex login --device-auth`; Codex debugging belongs in
-   `tmux new -As codex`. For Executor, open the portal, create the admin account,
+   are separate from `codex login --device-auth`; interactive SSH automatically
+   attaches the shared `main` tmux session, and `tm` returns to it. For Executor,
+   open the portal, create the admin account,
    configure integrations/OAuth and a local API key, then run `executor auth
    set` and `executor connect-hermes`. The first portable `package` must be
    copied off-host as an encrypted `.tar` plus its `.sha256`, alongside a

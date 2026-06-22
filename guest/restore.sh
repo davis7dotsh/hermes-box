@@ -82,9 +82,37 @@ install -o root -g root -m 0755 \
 install -o root -g root -m 0755 \
   /tmp/hermes-box-current-workspace-seed.sh \
   /usr/local/sbin/hermes-box-workspace-seed
+install -d -o root -g root -m 0755 /usr/local/share/hermes-box
+install -o root -g root -m 0644 \
+  /tmp/hermes-box-current-boxadmin.bash_profile \
+  /usr/local/share/hermes-box/boxadmin.bash_profile
+install -o boxadmin -g boxadmin -m 0644 \
+  /usr/local/share/hermes-box/boxadmin.bash_profile \
+  /home/boxadmin/.bash_profile
+install -o root -g root -m 0755 \
+  /tmp/hermes-box-current-tm /usr/local/bin/tm
+install -o root -g root -m 0644 \
+  /tmp/hermes-box-current-tmux.conf /etc/tmux.conf
 install -o root -g root -m 0644 \
   /tmp/hermes-box-current-supervisord.conf \
   /etc/supervisor/supervisord.conf
+
+cat >/etc/ssh/sshd_config.d/99-hermes-box.conf <<'EOF'
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+PubkeyAuthentication yes
+AllowUsers boxadmin
+AllowAgentForwarding no
+AllowTcpForwarding no
+DisableForwarding yes
+GatewayPorts no
+X11Forwarding no
+PermitTunnel no
+PermitUserEnvironment no
+AcceptEnv COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION
+EOF
+/usr/sbin/sshd -t
 
 find /workspace -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
 tar \
@@ -102,6 +130,9 @@ rm -f \
   /tmp/hermes-box-current-executor.sh \
   /tmp/hermes-box-current-extract-executor.py \
   /tmp/hermes-box-current-workspace-seed.sh \
+  /tmp/hermes-box-current-boxadmin.bash_profile \
+  /tmp/hermes-box-current-tm \
+  /tmp/hermes-box-current-tmux.conf \
   /tmp/hermes-box-current-supervisord.conf
 rm -f \
   /var/lib/hermes-box/runtime-ownership-repaired \

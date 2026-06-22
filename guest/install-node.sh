@@ -64,8 +64,17 @@ install_dir=/usr/local/lib/nodejs/node-v${node_major}
 rm -rf "$install_dir"
 install -d -o root -g root -m 0755 "$install_dir"
 tar -xJf "$temporary_dir/$node_archive" \
+  --no-same-owner \
+  --no-same-permissions \
   --strip-components=1 \
   -C "$install_dir"
+
+# Even a checksum-verified upstream archive must not choose ownership or leave
+# privileged/group-writable modes behind when it is unpacked by root.
+chown -hR root:root "$install_dir"
+find "$install_dir" -type d -exec chmod 0755 {} +
+find "$install_dir" -type f -perm /0111 -exec chmod 0755 {} +
+find "$install_dir" -type f ! -perm /0111 -exec chmod 0644 {} +
 
 for command in node npm npx corepack; do
   if [[ -e $install_dir/bin/$command ]]; then

@@ -19,10 +19,12 @@ bash -n guest/snapshot.sh
 bash -n guest/restore.sh
 bash -n guest/workspace-seed.sh
 bash -n guest/boxadmin.bash_profile
+bash -n guest/tm
 bash -n tests/lifecycle.sh
 bash -n tests/executor-extract.sh
 bash -n tests/executor-runtime.sh
 bash -n tests/workspace-seed.sh
+bash -n tests/tmux.sh
 visudo -cf guest/hermes-box.sudoers
 
 if command -v shellcheck >/dev/null 2>&1; then
@@ -37,10 +39,12 @@ if command -v shellcheck >/dev/null 2>&1; then
     guest/restore.sh \
     guest/workspace-seed.sh \
     guest/boxadmin.bash_profile \
+    guest/tm \
     tests/lifecycle.sh \
     tests/executor-extract.sh \
     tests/executor-runtime.sh \
-    tests/workspace-seed.sh
+    tests/workspace-seed.sh \
+    tests/tmux.sh
 else
   printf 'shellcheck not installed; skipping local shell lint\n' >&2
 fi
@@ -48,9 +52,14 @@ fi
 grep -Fq "PermitRootLogin no" guest/bootstrap.sh
 grep -Fq "AllowAgentForwarding no" guest/bootstrap.sh
 grep -Fq "AllowTcpForwarding no" guest/bootstrap.sh
+grep -Fq "DisableForwarding yes" guest/bootstrap.sh
+grep -Fq "AcceptEnv COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION" guest/bootstrap.sh
 grep -Fq "rm -f /etc/ssh/ssh_host_*" guest/bootstrap.sh
 grep -Fq "runtime-ownership-v2" guest/start.sh
 grep -Fq 'packed_root_uid=$(stat -c %u /usr/bin/sudo)' guest/start.sh
+grep -Fq '/usr/bin/sudo.ws' guest/start.sh
+grep -Fq '/usr/bin/cvtsudoers.ws' guest/start.sh
+grep -Fq '/usr/sbin/sudo_sendlog.ws' guest/start.sh
 grep -Fq "runtime-ownership-v*" guest/bootstrap.sh
 grep -Fq "runtime-ownership-v*" guest/restore.sh
 grep -Fq "groupadd --system messagebus" guest/start.sh
@@ -60,6 +69,8 @@ grep -Fq "no-egress mode is unavailable" internal/app/host.go
 grep -Eq 'backupFormat[[:space:]]*=[[:space:]]*"hermes-box-v2"' internal/app/backup.go
 grep -Fq "hermes-gateway.log" internal/app/lifecycle.go
 grep -Fq '"--net-backend", "virtio-net"' internal/app/lifecycle.go
+grep -Fq 'image = "ubuntu:26.04"' Smolfile
+grep -Fq 'const ubuntuImage = "ubuntu:26.04"' internal/app/app.go
 grep -Fq 'SMOLVM_PACK_CACHE_MAX_BYTES=17179869184' internal/app/host.go
 grep -Fq '"pack", ".smolvm-extracted"' internal/app/host.go
 grep -Fq "BatchMode=yes" internal/app/host.go
@@ -84,6 +95,17 @@ grep -Fq 'timeout --signal=TERM --kill-after=30s 20m' guest/bootstrap.sh
 grep -Fq 'installer_stages=(repository venv python-deps path config complete)' guest/bootstrap.sh
 grep -Fq 'latest-v${node_major}.x' guest/install-node.sh
 grep -Fq '  tmux' guest/bootstrap.sh
+grep -Fq '  ncurses-term' guest/bootstrap.sh
+grep -Fq 'infocmp -x xterm-ghostty' guest/bootstrap.sh
+grep -Fq 'SendEnv=COLORTERM' internal/app/host.go
+grep -Fq 'SendEnv=TERM_PROGRAM' internal/app/host.go
+grep -Fq 'SendEnv=TERM_PROGRAM_VERSION' internal/app/host.go
+grep -Fq 'guest", "tm"), "/tmp/hermes-box-tm"' internal/app/lifecycle.go
+grep -Fq 'guest", "tmux.conf"), "/tmp/hermes-box-tmux.conf"' internal/app/lifecycle.go
+grep -Fq '/tmp/hermes-box-current-tm /usr/local/bin/tm' guest/restore.sh
+grep -Fq '/tmp/hermes-box-current-tmux.conf /etc/tmux.conf' guest/restore.sh
+grep -Fq 'guest/tm"' internal/app/portable.go
+grep -Fq 'guest/tmux.conf"' internal/app/portable.go
 grep -Fq -- '--extra messaging' guest/bootstrap.sh
 grep -Fq -- '--locked' guest/bootstrap.sh
 grep -Fq 'chown -hR hermes:hermes /usr/local/lib/hermes-agent/venv' guest/bootstrap.sh
@@ -195,6 +217,7 @@ if grep -RFq 'hermes login --provider openai-codex' README.md AGENTS.md internal
 fi
 
 ./tests/workspace-seed.sh
+./tests/tmux.sh
 ./tests/executor-extract.sh
 ./tests/executor-runtime.sh
 python3 ./tests/hermes-gated-approval.py
