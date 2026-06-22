@@ -60,6 +60,8 @@ fi
   "grep -Fqx 'commit=2bd1977d8fad185c9b4be47884f7e87f1add0ce3' /usr/local/lib/hermes-agent/.hermes-box-gated-approval"
 ./bin/hermes-box ssh \
   "sudo -iu hermes /usr/local/lib/hermes-agent/venv/bin/python -c 'import discord, multipart'"
+./bin/hermes-box ssh \
+  'sudo -iu hermes /workspace/hermes-home/bin/uv self version --short | grep -Fqx 0.11.23'
 ./bin/hermes-box ssh 'sudo -iu hermes codex --strict-config --version'
 ./bin/hermes-box ssh 'sudo -iu hermes codex --help >/dev/null'
 ./bin/hermes-box ssh 'test -x /usr/local/bin/tm && test -f /etc/tmux.conf'

@@ -61,8 +61,9 @@ Hermes is pinned to commit
 the guest provisioning applies a narrow gated-approval source extension whose
 upstream anchors are verified against that revision. Provisioning also fetches
 that commit's installer by immutable URL and verifies its SHA-256 digest. The
-managed `uv` binary is pinned to `0.11.21` by release-archive digest because
-`0.11.22` reproducibly deadlocks while building Hermes under smolvm 1.0.4.
+managed `uv` binary is pinned to `0.11.23` by release-archive digest after
+bounded cold- and warm-cache Hermes builds under smolvm. This qualification is
+required because `0.11.22` previously deadlocked while building the project.
 Fresh builders also retry guest DNS and package-index readiness with a bounded
 deadline before installing anything. If smolvm reports networking enabled but
 boots a disposable builder without an IPv4 route, Hermes Box cycles that

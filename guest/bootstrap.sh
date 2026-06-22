@@ -20,8 +20,8 @@ hermes_home=/workspace/hermes-home
 codex_home=/workspace/codex-home
 supported_hermes_commit=2bd1977d8fad185c9b4be47884f7e87f1add0ce3
 hermes_installer_sha256=dbd9d555ed4ac67bd1fc71ba6a39b410cf2af0ebcfd8f4889e086af78c9ddcaa
-uv_version=0.11.21
-uv_archive_sha256=88e800834007cc5efd4675f166eb2a51e7e3ad19876d85fa8805a6fb5c922397
+uv_version=0.11.23
+uv_archive_sha256=1873a77350f6621279ae1a0d2227f2bd8b67131598f14a7eb0ba2215d3da2c98
 download_curl_args=(
   --proto '=https'
   --tlsv1.2
@@ -198,10 +198,10 @@ if [[ ${HERMES_INSTALL_COMMIT:-} != "$supported_hermes_commit" ]]; then
 fi
 
 # The upstream installer deliberately reuses a managed uv binary when one is
-# already present. Pin that binary to the last version proven on smolvm 1.0.4:
-# uv 0.11.22 reproducibly deadlocks while building the editable Hermes project.
-# Downloading the release archive directly and verifying its reviewed digest
-# keeps fresh image creation independent of whichever uv release is newest.
+# already present. Pin that binary to the release proven by bounded cold- and
+# warm-cache Hermes builds under smolvm. Downloading the release archive
+# directly and verifying its reviewed digest keeps fresh image creation
+# independent of whichever uv release is newest.
 uv_archive=/tmp/hermes-box-uv.tar.gz
 uv_extract=/tmp/hermes-box-uv
 rm -rf -- "$uv_archive" "$uv_extract"
