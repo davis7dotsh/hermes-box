@@ -77,6 +77,7 @@ apt_packages=(
   curl
   git
   libffi-dev
+  ncurses-term
   openssh-server
   procps
   python3
@@ -129,6 +130,10 @@ install -o root -g root -m 0644 \
 install -o boxadmin -g boxadmin -m 0644 \
   /usr/local/share/hermes-box/boxadmin.bash_profile \
   /home/boxadmin/.bash_profile
+install -o root -g root -m 0755 \
+  /tmp/hermes-box-tm /usr/local/bin/tm
+install -o root -g root -m 0644 \
+  /tmp/hermes-box-tmux.conf /etc/tmux.conf
 
 cat >/etc/ssh/sshd_config.d/99-hermes-box.conf <<'EOF'
 PasswordAuthentication no
@@ -138,10 +143,12 @@ PubkeyAuthentication yes
 AllowUsers boxadmin
 AllowAgentForwarding no
 AllowTcpForwarding no
+DisableForwarding yes
 GatewayPorts no
 X11Forwarding no
 PermitTunnel no
 PermitUserEnvironment no
+AcceptEnv COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION
 EOF
 
 install -o root -g root -m 0440 \
@@ -329,6 +336,11 @@ sudo -iu hermes /usr/local/lib/hermes-agent/venv/bin/python -c 'import discord'
 sudo -iu hermes node --version
 sudo -iu hermes npm --version
 sudo -iu hermes tmux -V
+infocmp -x tmux-256color >/dev/null
+infocmp -x xterm-256color >/dev/null
+# Ubuntu 26 includes Ghostty's terminfo. Keep it intact when available; tm
+# handles older restored roots by falling back only when this entry is absent.
+infocmp -x xterm-ghostty >/dev/null
 
 install -d -m 0755 /run/sshd
 ssh-keygen -A

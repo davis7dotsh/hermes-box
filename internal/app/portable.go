@@ -53,6 +53,8 @@ var portableProjectFiles = []string{
 	"guest/snapshot.sh",
 	"guest/start.sh",
 	"guest/supervisord.conf",
+	"guest/tm",
+	"guest/tmux.conf",
 	"guest/workspace-seed.sh",
 	"internal/app/app.go",
 	"internal/app/backup.go",

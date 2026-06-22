@@ -158,6 +158,9 @@ func (a *App) sshArgs(port int, remoteArgs ...string) []string {
 		"-p", strconv.Itoa(port),
 		"-o", "IdentitiesOnly=yes",
 		"-o", "ForwardAgent=no",
+		"-o", "SendEnv=COLORTERM",
+		"-o", "SendEnv=TERM_PROGRAM",
+		"-o", "SendEnv=TERM_PROGRAM_VERSION",
 		"-o", "BatchMode=yes",
 		"-o", "StrictHostKeyChecking=accept-new",
 		"-o", "UserKnownHostsFile=" + a.knownHosts,
@@ -182,6 +185,8 @@ test -f /workspace/hermes-home/config.yaml
 test -d /workspace/codex-home
 test -w /workspace/codex-home
 test -f /workspace/codex-home/config.toml
+test -x /usr/local/bin/tm
+test -f /etc/tmux.conf
 test "$(stat -c %U /workspace/hermes-home)" = hermes
 test "$(stat -c %U /workspace/codex-home)" = hermes
 supervisorctl status sshd | grep -q RUNNING
@@ -191,6 +196,8 @@ sudo -iu hermes /usr/local/lib/hermes-agent/venv/bin/python -c 'import discord'
 sudo -iu hermes node --version
 sudo -iu hermes npm --version
 sudo -iu hermes tmux -V
+infocmp -x tmux-256color >/dev/null
+infocmp -x xterm-256color >/dev/null
 sudo -iu hermes codex --strict-config --version
 `
 	if a.config.ExecutorEnabled {

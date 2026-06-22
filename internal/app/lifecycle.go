@@ -38,7 +38,7 @@ func (a *App) cmdInit(ctx context.Context, args []string) (resultErr error) {
 		"smolvm",
 		"machine", "create",
 		"--name", a.config.BuilderName,
-		"--image", "ubuntu:24.04",
+		"--image", ubuntuImage,
 		"--cpus", strconv.Itoa(a.config.CPUs),
 		"--mem", strconv.Itoa(a.config.MemoryMiB),
 		"--storage", strconv.Itoa(a.config.StorageGB),
@@ -74,6 +74,8 @@ func (a *App) cmdInit(ctx context.Context, args []string) (resultErr error) {
 		{filepath.Join(a.root, "tests", "hermes-gated-approval.py"), "/tmp/hermes-box-test-hermes-gated-approval.py"},
 		{filepath.Join(a.root, "guest", "workspace-seed.sh"), "/tmp/hermes-box-workspace-seed.sh"},
 		{filepath.Join(a.root, "guest", "boxadmin.bash_profile"), "/tmp/hermes-box-boxadmin.bash_profile"},
+		{filepath.Join(a.root, "guest", "tm"), "/tmp/hermes-box-tm"},
+		{filepath.Join(a.root, "guest", "tmux.conf"), "/tmp/hermes-box-tmux.conf"},
 		{filepath.Join(a.root, "guest", "hermes-box.sudoers"), "/tmp/hermes-box-sudoers"},
 		{filepath.Join(a.root, "guest", "supervisord.conf"), "/tmp/hermes-box-supervisord.conf"},
 		{a.sshPublicKey, "/tmp/hermes-box-authorized-key.pub"},
@@ -377,11 +379,10 @@ Guest phase -- finish the human sign-ins:
   hermes model                                  # select inference; reuses Codex OAuth
   codex login --device-auth                     # separate Codex CLI account
 
-Keep a Codex debugging session alive:
-  tmux new -As codex
+The SSH command opens the persistent tmux session named main automatically.
+  tm                                             # create or return to main
   codex
-  # detach with Ctrl-b d; run tmux new -As codex to reattach
-  exit                                          # return to the host
+  # detach with Ctrl-b d; detaching closes SSH, and reconnecting reattaches
 `, command)
 	if a.config.ExecutorEnabled {
 		fmt.Fprintf(a.stderr, `

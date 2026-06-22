@@ -13,6 +13,15 @@ if [[ ! -f $snapshot_id_file || ! -f $snapshot_tar ]]; then
 fi
 
 expected_id=$(cat "$snapshot_id_file")
+snapshot_id_bytes=$(wc -c <"$snapshot_id_file")
+snapshot_id_bytes=${snapshot_id_bytes//[[:space:]]/}
+if [[ ! $expected_id =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] ||
+  ((snapshot_id_bytes != ${#expected_id} + 1)); then
+  printf 'invalid workspace snapshot ID metadata: %s\n' \
+    "$snapshot_id_file" >&2
+  exit 1
+fi
+
 current_id=
 if [[ -f $restored_id_file ]]; then
   current_id=$(cat "$restored_id_file")

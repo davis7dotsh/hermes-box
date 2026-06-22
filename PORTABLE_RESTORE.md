@@ -53,6 +53,15 @@ printf '\nHERMES_BOX_SSH_KEY=%s\n' /secure/path/hermes-box-ed25519 >>hermes-box.
 ./bin/hermes-box ssh
 ```
 
+The restore injects the current `tm` launcher, tmux configuration, interactive
+SSH profile, and SSH hardening into older snapshots. Interactive SSH therefore
+reattaches the exact `main` session after restore. If an older root does not
+contain `xterm-ghostty` terminfo, only that terminal name falls back to
+`xterm-256color`; current Ubuntu 26 images preserve Ghostty's native entry.
+This targeted reinjection does not upgrade the archived operating system: an
+Ubuntu 24.04 snapshot restores as Ubuntu 24.04. Build a separate new box with
+`init` for an Ubuntu 26.04 migration.
+
 If Executor is enabled in `hermes-box.conf`, also run:
 
 ```bash

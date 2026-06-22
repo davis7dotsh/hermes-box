@@ -238,6 +238,23 @@ TELEGRAM_BOT_TOKEN = HERMES_BOX_TELEGRAM_BOT_TOKEN # comment
 	}
 }
 
+func TestSSHArgsForwardTerminalMetadataAndPreserveRemoteCommand(t *testing.T) {
+	application := New(t.TempDir(), config.Config{}, process.OSRunner{}, io.Discard, io.Discard)
+	args := application.sshArgs(2223, "printf", "remote command")
+	for _, expected := range []string{
+		"SendEnv=COLORTERM",
+		"SendEnv=TERM_PROGRAM",
+		"SendEnv=TERM_PROGRAM_VERSION",
+	} {
+		if !containsArgument(args, expected) {
+			t.Fatalf("SSH args do not contain %q: %q", expected, args)
+		}
+	}
+	if got := args[len(args)-2:]; got[0] != "printf" || got[1] != "remote command" {
+		t.Fatalf("remote command changed: %q", got)
+	}
+}
+
 func TestValidateSecretMappingEnvironmentRejectsMissingOrEmptyHostValue(t *testing.T) {
 	mappings := []string{"OPENAI_API_KEY=HOST_OPENAI_API_KEY"}
 	for _, lookup := range []func(string) (string, bool){

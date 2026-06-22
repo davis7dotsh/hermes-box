@@ -11,12 +11,12 @@ machine regardless of what happens inside it.
 ## What You Get
 
 ```text
-Ubuntu 24.04 VM
+Ubuntu 26.04 VM
 ├── boxadmin                 Key-only SSH entry account
 ├── hermes                   Agent account with passwordless full sudo
 ├── codex                    Interactive Codex CLI/TUI, full access inside VM
 ├── node + npm               Current Node.js 24 LTS toolchain
-├── tmux                     Persistent terminal sessions for Codex and Hermes
+├── tmux                     Blessed persistent `main` terminal session
 ├── sshd                     Bound to host loopback only
 ├── supervisord
 │   ├── optional native Executor self-host service
@@ -28,9 +28,9 @@ Ubuntu 24.04 VM
     └── work/                Hermes working directory
 ```
 
-Interactive SSH logins authenticate as `boxadmin` and immediately enter a
-login shell as `hermes`. Noninteractive SSH commands remain explicit and
-predictable.
+Interactive SSH logins authenticate as `boxadmin`, switch to `hermes`, and
+immediately create or attach the tmux session named `main` in `/workspace/work`.
+Noninteractive SSH commands remain explicit and predictable.
 
 ## Security Boundaries
 
@@ -53,7 +53,7 @@ The current implementation is tested with:
 - macOS on ARM64
 - Go `1.24` or newer
 - smolvm `1.0.4`
-- Ubuntu `24.04`
+- Ubuntu `26.04`
 - Hermes Agent `0.16.0`
 
 Hermes is pinned to commit
@@ -72,6 +72,14 @@ default so package installation gets a real guest NIC and DNS path. Hermes Box
 also raises smolvm 1.0.4's extraction-cache ceiling for runtime creation and
 verifies the packed-layer marker immediately, preventing that version's cache
 eviction from surfacing later as a failed first boot.
+
+The Ubuntu base selection applies when `init` builds a new image. Existing
+Ubuntu 24.04 machines are not upgraded in place, and restoring a snapshot
+retains the snapshot's archived root filesystem. To move a box itself to
+Ubuntu 26.04, create a new box with `init` under distinct machine names and
+ports, then migrate the needed workspace state deliberately. Keep a package of
+the old box for rollback; restoring that package is recovery, not an OS
+upgrade.
 
 Required host commands:
 
@@ -148,10 +156,10 @@ Open an interactive SSH session:
 ./bin/hermes-box ssh
 ```
 
-You should land here without running `sudo`:
+You should land in the persistent `main` tmux session without running `sudo`:
 
 ```text
-hermes@container:/workspace/work$
+main:0  bash
 ```
 
 Authenticate OpenAI Codex once for the gated reviewer and for inference when
@@ -292,14 +300,21 @@ codex update
 codex --version
 ```
 
-For a persistent debugging session that survives SSH disconnects:
+Interactive SSH already runs inside the persistent `main` session. From any
+Hermes shell, create or return to that exact session with:
 
 ```bash
-tmux new -As codex
+tm
 codex
 ```
 
-Detach with `Ctrl-b`, then `d`; run `tmux new -As codex` to reattach.
+Detach with `Ctrl-b`, then `d`. The SSH connection exits after a normal detach;
+the next `./bin/hermes-box ssh` reattaches. The dark-green status bar supports
+mouse clicks for window selection. With the keyboard, use `Ctrl-b n` and
+`Ctrl-b p` for the next and previous windows, or `Ctrl-b` followed by a window
+number. Ghostty metadata, true color, clipboard escape sequences, focus events,
+and extended keys are passed through; tmux 3.5 and newer uses CSI-u so
+`Shift+Enter` remains distinct in TUIs such as Codex.
 
 The login cache is stored as `/workspace/codex-home/auth.json`. Treat snapshots
 and portable packages as credentials after signing in.
@@ -668,6 +683,8 @@ hermes-box/
 │   ├── snapshot.sh
 │   ├── start.sh              Installs Codex once, then starts services
 │   ├── supervisord.conf
+│   ├── tm                    Creates or attaches the exact `main` session
+│   ├── tmux.conf             Shared terminal behavior and status styling
 │   └── workspace-seed.sh
 ├── tests/
 ├── Makefile

@@ -870,6 +870,9 @@ func (a *App) applyBackup(ctx context.Context, name, backupDir string, port int)
 		{filepath.Join(a.root, "guest", "executor.sh"), name + ":/tmp/hermes-box-current-executor.sh"},
 		{filepath.Join(a.root, "guest", "extract-executor.py"), name + ":/tmp/hermes-box-current-extract-executor.py"},
 		{filepath.Join(a.root, "guest", "workspace-seed.sh"), name + ":/tmp/hermes-box-current-workspace-seed.sh"},
+		{filepath.Join(a.root, "guest", "boxadmin.bash_profile"), name + ":/tmp/hermes-box-current-boxadmin.bash_profile"},
+		{filepath.Join(a.root, "guest", "tm"), name + ":/tmp/hermes-box-current-tm"},
+		{filepath.Join(a.root, "guest", "tmux.conf"), name + ":/tmp/hermes-box-current-tmux.conf"},
 		{filepath.Join(a.root, "guest", "supervisord.conf"), name + ":/tmp/hermes-box-current-supervisord.conf"},
 		{a.sshPublicKey, name + ":/tmp/hermes-box-restore-authorized-key.pub"},
 	}

@@ -16,6 +16,8 @@ import (
 	"github.com/davis7dotsh/hermes-box/internal/process"
 )
 
+const ubuntuImage = "ubuntu:26.04"
+
 type App struct {
 	root   string
 	config config.Config
@@ -317,7 +319,7 @@ Commands:
   start                    Start and verify the box
   stop                     Gracefully stop Hermes, then stop the box
   restart                  Stop and start the box
-  ssh [COMMAND...]         SSH as boxadmin on 127.0.0.1:%d
+  ssh [COMMAND...]         Attach main tmux, or run COMMAND, on 127.0.0.1:%d
   shell                    Open the out-of-band root console
   status                   Show VM, Supervisor, and workspace status
   logs [-f] [-n LINES]     Show or follow Hermes gateway logs

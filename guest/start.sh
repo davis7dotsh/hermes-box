@@ -81,22 +81,39 @@ passwd --delete boxadmin
 passwd --lock hermes
 
 # smolvm 1.0.4 remaps ownership of root-created overlay files while packing.
-# Repair the small set of setuid/config files that sudo validates strictly.
-chown root:root \
-  /usr/bin/sudo \
-  /usr/bin/sudoedit \
-  /usr/bin/sudoreplay \
-  /usr/bin/cvtsudoers \
-  /usr/sbin/visudo \
-  /usr/sbin/sudo_logsrvd \
-  /usr/sbin/sudo_sendlog \
-  /etc/sudo.conf \
-  /etc/sudoers \
-  /etc/sudoers.d \
-  /etc/sudoers.d/README \
-  /etc/sudoers.d/hermes-box \
-  /etc/pam.d/sudo \
+# Repair the core setuid/config files that sudo validates strictly. Ubuntu
+# 26.04 installs sudo.ws utilities alongside the alternatives-backed core
+# commands, while Ubuntu 24.04 uses unsuffixed utility names.
+sudo_required_paths=(
+  /usr/bin/sudo
+  /usr/bin/sudoedit
+  /usr/sbin/visudo
+  /etc/sudo.conf
+  /etc/sudoers
+  /etc/sudoers.d
+  /etc/sudoers.d/README
+  /etc/sudoers.d/hermes-box
+  /etc/pam.d/sudo
   /etc/pam.d/sudo-i
+)
+sudo_helper_candidates=(
+  /usr/bin/sudo.ws
+  /usr/bin/sudoreplay
+  /usr/bin/sudoreplay.ws
+  /usr/bin/cvtsudoers
+  /usr/bin/cvtsudoers.ws
+  /usr/sbin/visudo.ws
+  /usr/sbin/sudo_logsrvd
+  /usr/sbin/sudo_sendlog
+  /usr/sbin/sudo_sendlog.ws
+)
+sudo_helper_paths=()
+for path in "${sudo_helper_candidates[@]}"; do
+  if [[ -e $path || -L $path ]]; then
+    sudo_helper_paths+=("$path")
+  fi
+done
+chown root:root "${sudo_required_paths[@]}" "${sudo_helper_paths[@]}"
 chown -hR root:root /usr/libexec/sudo
 chmod 4755 /usr/bin/sudo
 chmod 0440 /etc/sudoers /etc/sudoers.d/hermes-box
