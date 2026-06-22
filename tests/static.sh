@@ -97,6 +97,7 @@ grep -Fq 'latest-v${node_major}.x' guest/install-node.sh
 grep -Fq '  tmux' guest/bootstrap.sh
 grep -Fq '  ncurses-term' guest/bootstrap.sh
 grep -Fq 'infocmp -x xterm-ghostty' guest/bootstrap.sh
+grep -Fq 'infocmp -x xterm-ghostty >/dev/null 2>&1 || true' guest/bootstrap.sh
 grep -Fq 'SendEnv=COLORTERM' internal/app/host.go
 grep -Fq 'SendEnv=TERM_PROGRAM' internal/app/host.go
 grep -Fq 'SendEnv=TERM_PROGRAM_VERSION' internal/app/host.go
@@ -168,7 +169,7 @@ grep -Fq 'MCP_EXECUTOR_API_KEY' internal/app/executor.go
 grep -Fq 'tools.executor.coreTools.connections.list' internal/app/executor.go
 grep -Fq 'status [--json] [--sizes]' internal/app/executor.go
 grep -Fq 'context.WithTimeout(ctx, a.startupDeadline())' internal/app/executor.go
-grep -Fq '81eaedd0f5c471c7ee748990066135a684f3c962' internal/config/config.go
+grep -Fq '2bd1977d8fad185c9b4be47884f7e87f1add0ce3' internal/config/config.go
 grep -Fq 'upstream anchor drift' guest/patch-hermes-gated-approval.py
 grep -Fq 'Configuration is deliberately last' guest/patch-hermes-gated-approval.py
 grep -Fq 'HERMES_GATED_APPROVAL_PATCHER=/tmp/hermes-box-patch-hermes-gated-approval.py' guest/bootstrap.sh

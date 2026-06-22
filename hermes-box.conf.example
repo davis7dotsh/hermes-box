@@ -19,10 +19,10 @@ HERMES_BOX_EXECUTOR_ENABLED=false
 HERMES_BOX_EXECUTOR_PORT=4788
 HERMES_BOX_EXECUTOR_IMAGE=ghcr.io/rhyssullivan/executor-selfhost:v1.5.16@sha256:5d763c718b6567d56e0168d3c205065a37355da1468290f2030f7f6c792f02b6
 
-# The gated-approval source patch is reviewed against this exact Hermes 0.16.0
+# The gated-approval source patch is reviewed against this exact Hermes 0.17.0
 # revision. Changing it intentionally fails provisioning until the patch and
 # its upstream anchors are reviewed for the new revision.
-HERMES_BOX_HERMES_COMMIT=81eaedd0f5c471c7ee748990066135a684f3c962
+HERMES_BOX_HERMES_COMMIT=2bd1977d8fad185c9b4be47884f7e87f1add0ce3
 
 # Optional: store images, backups, and runtime state outside the repository.
 # HERMES_BOX_DATA_DIR=

@@ -18,7 +18,7 @@ fi
 
 hermes_home=/workspace/hermes-home
 codex_home=/workspace/codex-home
-supported_hermes_commit=81eaedd0f5c471c7ee748990066135a684f3c962
+supported_hermes_commit=2bd1977d8fad185c9b4be47884f7e87f1add0ce3
 hermes_installer_sha256=dbd9d555ed4ac67bd1fc71ba6a39b410cf2af0ebcfd8f4889e086af78c9ddcaa
 uv_version=0.11.21
 uv_archive_sha256=88e800834007cc5efd4675f166eb2a51e7e3ad19876d85fa8805a6fb5c922397
@@ -256,7 +256,7 @@ for installer_stage in "${installer_stages[@]}"; do
   fi
 done
 
-# Hermes' stock 0.16.0 approval modes do not include the conservative one-shot
+# Hermes' stock 0.17.0 approval modes do not include the conservative one-shot
 # Codex reviewer. Apply the source extension only to the reviewed commit. The
 # patcher verifies every upstream anchor and compiles the result before it
 # writes gated mode into config.yaml, so revision drift cannot leave a YAML-only
@@ -288,7 +288,7 @@ EOF
 chown hermes:hermes "$codex_home/config.toml"
 chmod 0600 "$codex_home/config.toml"
 
-# Hermes 0.16.0 defaults small Codex requests to a 12-second gap between SSE
+# Hermes 0.17.0 defaults small Codex requests to a 12-second gap between SSE
 # events. Reasoning models can legitimately stay quiet longer than that.
 hermes_env=$hermes_home/.env
 if ! grep -q '^HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS=' "$hermes_env"; then
@@ -338,9 +338,10 @@ sudo -iu hermes npm --version
 sudo -iu hermes tmux -V
 infocmp -x tmux-256color >/dev/null
 infocmp -x xterm-256color >/dev/null
-# Ubuntu 26 includes Ghostty's terminfo. Keep it intact when available; tm
-# handles older restored roots by falling back only when this entry is absent.
-infocmp -x xterm-ghostty >/dev/null
+# Ubuntu images do not consistently include Ghostty's terminfo entry. The tm
+# wrapper preserves xterm-ghostty when available and otherwise falls back to
+# the installed xterm-256color entry before attaching.
+infocmp -x xterm-ghostty >/dev/null 2>&1 || true
 
 install -d -m 0755 /run/sshd
 ssh-keygen -A

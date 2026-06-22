@@ -54,10 +54,10 @@ The current implementation is tested with:
 - Go `1.24` or newer
 - smolvm `1.0.4`
 - Ubuntu `26.04`
-- Hermes Agent `0.16.0`
+- Hermes Agent `0.17.0`
 
 Hermes is pinned to commit
-`81eaedd0f5c471c7ee748990066135a684f3c962`. The pin is a security boundary:
+`2bd1977d8fad185c9b4be47884f7e87f1add0ce3`. The pin is a security boundary:
 the guest provisioning applies a narrow gated-approval source extension whose
 upstream anchors are verified against that revision. Provisioning also fetches
 that commit's installer by immutable URL and verifies its SHA-256 digest. The
@@ -209,7 +209,7 @@ Hermes authentication and configuration live entirely inside
 ## Command Approval Gate
 
 New Hermes Box images install a conservative, one-command permission reviewer
-on top of Hermes 0.16.0. Stock Hermes supports `manual`, `smart`, and `off`; the
+on top of Hermes 0.17.0. Stock Hermes supports `manual`, `smart`, and `off`; the
 `gated` mode here is a source extension, not a YAML-only setting. Provisioning
 therefore follows a hard order:
 
@@ -599,7 +599,7 @@ HERMES_BOX_STORAGE_GB=15
 HERMES_BOX_OVERLAY_GB=6
 HERMES_BOX_NETWORK_MODE=full
 HERMES_BOX_SSH_KEY=/secure/path/hermes-box-ed25519
-HERMES_BOX_HERMES_COMMIT=81eaedd0f5c471c7ee748990066135a684f3c962
+HERMES_BOX_HERMES_COMMIT=2bd1977d8fad185c9b4be47884f7e87f1add0ce3
 HERMES_BOX_EXECUTOR_ENABLED=false
 HERMES_BOX_EXECUTOR_PORT=4788
 ```

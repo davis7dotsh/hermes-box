@@ -18,7 +18,7 @@ const (
 	defaultStorageGB     = 15
 	defaultOverlayGB     = 6
 	defaultNetworkMode   = "full"
-	defaultHermesCommit  = "81eaedd0f5c471c7ee748990066135a684f3c962"
+	defaultHermesCommit  = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3"
 	defaultExecutorPort  = 4788
 	defaultExecutorImage = "ghcr.io/rhyssullivan/executor-selfhost:v1.5.16@sha256:5d763c718b6567d56e0168d3c205065a37355da1468290f2030f7f6c792f02b6"
 )
