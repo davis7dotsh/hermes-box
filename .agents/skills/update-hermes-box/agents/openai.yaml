@@ -1,0 +1,4 @@
+interface:
+  display_name: "Update Hermes Box"
+  short_description: "Upgrade pinned Hermes Box components safely"
+  default_prompt: "Use $update-hermes-box to audit and upgrade the requested Hermes Box components through a reviewed green pull request."
