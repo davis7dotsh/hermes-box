@@ -81,8 +81,9 @@ grep -Fq 'HERMES_BOX_NETWORK_MODE=full' hermes-box.conf.example
 grep -Fq 'CODEX_HOME=/workspace/codex-home' guest/bootstrap.sh
 grep -Fq 'CODEX_INSTALL_DIR=$CODEX_HOME/bin' guest/bootstrap.sh
 grep -Fq 'hermes-box-install-node 24' guest/bootstrap.sh
-grep -Fq 'uv_version=0.11.21' guest/bootstrap.sh
-grep -Fq '88e800834007cc5efd4675f166eb2a51e7e3ad19876d85fa8805a6fb5c922397' guest/bootstrap.sh
+grep -Fq 'uv_version=0.11.23' guest/bootstrap.sh
+grep -Fq '1873a77350f6621279ae1a0d2227f2bd8b67131598f14a7eb0ba2215d3da2c98' guest/bootstrap.sh
+grep -Fq 'uv self version --short | grep -Fqx 0.11.23' tests/lifecycle.sh
 grep -Fq 'APT::Update::Error-Mode=any' guest/bootstrap.sh
 grep -Fq 'Acquire::http::Timeout "30"' guest/bootstrap.sh
 grep -Fq 'Acquire::https::Timeout "30"' guest/bootstrap.sh
