@@ -141,7 +141,7 @@ grep -Fq 'EXECUTOR_HOST=0.0.0.0' guest/executor.sh
 grep -Fq 'BUN_FEATURE_FLAG_DISABLE_IPV6=1' guest/executor.sh
 grep -Fq 'find /workspace/executor ! -type l' guest/start.sh
 grep -Fq "grep -qx 'BUN_FEATURE_FLAG_DISABLE_IPV6=1'" internal/app/host.go
-grep -Fq 'ghcr.io/rhyssullivan/executor-selfhost:v1.5.12@sha256:' internal/config/config.go
+grep -Fq 'ghcr.io/rhyssullivan/executor-selfhost:v1.5.16@sha256:' internal/config/config.go
 grep -Fq 'MCP_EXECUTOR_API_KEY' internal/app/executor.go
 grep -Fq 'tools.executor.coreTools.connections.list' internal/app/executor.go
 grep -Fq 'status [--json] [--sizes]' internal/app/executor.go

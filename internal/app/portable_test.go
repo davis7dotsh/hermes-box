@@ -20,7 +20,7 @@ import (
 )
 
 func TestCreatePortablePackageIncludesRequiredArtifacts(t *testing.T) {
-	const executorImage = "ghcr.io/rhyssullivan/executor-selfhost:v1.5.12@sha256:e40b2179c005b3124e794e9a8505341db46d0a9a1631e7f3fdcd023462ecf70b"
+	const executorImage = "ghcr.io/rhyssullivan/executor-selfhost:v1.5.16@sha256:5d763c718b6567d56e0168d3c205065a37355da1468290f2030f7f6c792f02b6"
 
 	root := t.TempDir()
 	dataRoot := t.TempDir()

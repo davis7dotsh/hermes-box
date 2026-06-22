@@ -589,7 +589,7 @@ HERMES_BOX_EXECUTOR_ENABLED=false
 HERMES_BOX_EXECUTOR_PORT=4788
 ```
 
-`HERMES_BOX_EXECUTOR_IMAGE` defaults to the reviewed v1.5.12 multi-platform OCI
+`HERMES_BOX_EXECUTOR_IMAGE` defaults to the reviewed v1.5.16 multi-platform OCI
 image pinned by digest. Overrides are accepted only when they also contain an
 explicit tag and full SHA-256 digest. The guest always resolves and verifies
 the Linux ARM64 child image.
