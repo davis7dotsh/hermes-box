@@ -15,26 +15,33 @@ startup_failed() {
 trap startup_failed ERR
 log_startup started
 
-# smolvm 1.0.4 remaps root-owned packed files to the host UID/GID. The guest
-# has no legitimate UID 501, so repair those paths once before starting
-# services. Some dangling symlinks cannot be lchowned through the packed
-# overlay, but they do not grant access to a guest user.
+# smolvm 1.0.4 remaps root-owned packed files to the host UID/GID. Derive that
+# pair from packed sudo rather than assuming the first macOS user is 501:20,
+# then repair those paths once before starting services. Some dangling symlinks
+# cannot be lchowned through the packed overlay, but they do not grant access to
+# a guest user.
 find / -xdev -maxdepth 1 -type f -regextype posix-extended \
   -regex '/[0-9a-f]{16}' -delete
-ownership_marker=/var/lib/hermes-box/runtime-ownership-repaired
+install -d -o root -g root -m 0700 /var/lib/hermes-box
+ownership_marker=/var/lib/hermes-box/runtime-ownership-v2
+ownership_migration_needed=false
 if [[ ! -f $ownership_marker ]]; then
-  find / -xdev -uid 501 -gid 20 ! -type l \
-    -exec chown root:root {} + 2>/dev/null || true
-  find / -xdev -uid 501 -gid 20 -type l \
-    -exec chown -h root:root {} \; 2>/dev/null || true
-  if find / -xdev -uid 501 -gid 20 ! -type l -print -quit |
-    grep -q .; then
-    printf 'unable to repair packed root ownership\n' >&2
-    exit 1
+  ownership_migration_needed=true
+  startup_stage=ownership-migration
+  log_startup started
+  packed_root_uid=$(stat -c %u /usr/bin/sudo)
+  packed_root_gid=$(stat -c %g /usr/bin/sudo)
+  if [[ $packed_root_uid != 0 || $packed_root_gid != 0 ]]; then
+    find / -xdev -uid "$packed_root_uid" -gid "$packed_root_gid" ! -type l \
+      -exec chown root:root {} + 2>/dev/null || true
+    find / -xdev -uid "$packed_root_uid" -gid "$packed_root_gid" -type l \
+      -exec chown -h root:root {} \; 2>/dev/null || true
+    if find / -xdev -uid "$packed_root_uid" -gid "$packed_root_gid" \
+      ! -type l -print -quit | grep -q .; then
+      printf 'unable to repair packed root ownership\n' >&2
+      exit 1
+    fi
   fi
-  : >"$ownership_marker"
-  chown root:root "$ownership_marker"
-  chmod 0600 "$ownership_marker"
 fi
 chown root:root /tmp /var/tmp
 chmod 1777 /tmp /var/tmp
@@ -50,9 +57,8 @@ if ! id sshd >/dev/null 2>&1; then
 fi
 # smolvm can remap the builder-owned virtualenv while packing. Hermes needs
 # write access so optional provider and gateway dependencies can be installed.
-if [[ -d /usr/local/lib/hermes-agent/venv ]]; then
-  startup_stage=repair-hermes-venv
-  log_startup started
+if [[ $ownership_migration_needed == true && \
+  -d /usr/local/lib/hermes-agent/venv ]]; then
   find /usr/local/lib/hermes-agent/venv ! -type l \
     -exec chown hermes:hermes {} +
   find /usr/local/lib/hermes-agent/venv -type l \
@@ -101,21 +107,23 @@ if ! grep -Eq "[[:space:]]$guest_hostname([[:space:]]|$)" /etc/hosts; then
 fi
 
 rm -f /home/hermes/.hermes
-find /home/boxadmin ! -type l -exec chown boxadmin:boxadmin {} +
-find /home/boxadmin -type l \
-  -exec chown -h boxadmin:boxadmin {} \; 2>/dev/null || true
-find /home/hermes ! -type l -exec chown hermes:hermes {} +
-find /home/hermes -type l \
-  -exec chown -h hermes:hermes {} \; 2>/dev/null || true
-if find /home/boxadmin ! -type l \
-  \( ! -user boxadmin -o ! -group boxadmin \) -print -quit | grep -q .; then
-  printf 'unable to repair boxadmin home ownership\n' >&2
-  exit 1
-fi
-if find /home/hermes ! -type l \
-  \( ! -user hermes -o ! -group hermes \) -print -quit | grep -q .; then
-  printf 'unable to repair Hermes home ownership\n' >&2
-  exit 1
+if [[ $ownership_migration_needed == true ]]; then
+  find /home/boxadmin ! -type l -exec chown boxadmin:boxadmin {} +
+  find /home/boxadmin -type l \
+    -exec chown -h boxadmin:boxadmin {} \; 2>/dev/null || true
+  find /home/hermes ! -type l -exec chown hermes:hermes {} +
+  find /home/hermes -type l \
+    -exec chown -h hermes:hermes {} \; 2>/dev/null || true
+  if find /home/boxadmin ! -type l \
+    \( ! -user boxadmin -o ! -group boxadmin \) -print -quit | grep -q .; then
+    printf 'unable to repair boxadmin home ownership\n' >&2
+    exit 1
+  fi
+  if find /home/hermes ! -type l \
+    \( ! -user hermes -o ! -group hermes \) -print -quit | grep -q .; then
+    printf 'unable to repair Hermes home ownership\n' >&2
+    exit 1
+  fi
 fi
 install -d -o boxadmin -g boxadmin -m 0700 /home/boxadmin/.ssh
 chown boxadmin:boxadmin /home/boxadmin/.ssh/authorized_keys
@@ -229,10 +237,17 @@ if [[ ${HERMES_BOX_EXECUTOR_ENABLED:-false} == true ]]; then
     /workspace/executor/data \
     /workspace/.hermes-box-runtime \
     /workspace/.hermes-box-runtime/executor
-  find /workspace/executor ! -type l \
-    -exec chown hermes:hermes {} +
-  find /workspace/executor -type l \
-    -exec chown -h hermes:hermes {} \; 2>/dev/null || true
+  if [[ $ownership_migration_needed == true ]]; then
+    find /workspace/executor ! -type l \
+      -exec chown hermes:hermes {} +
+    find /workspace/executor -type l \
+      -exec chown -h hermes:hermes {} \; 2>/dev/null || true
+    if find /workspace/executor ! -type l \
+      \( ! -user hermes -o ! -group hermes \) -print -quit | grep -q .; then
+      printf 'unable to repair Executor ownership\n' >&2
+      exit 1
+    fi
+  fi
   cat >"$executor_supervisor" <<'EOF'
 [program:executor]
 command=/usr/local/sbin/hermes-box-executor
@@ -252,6 +267,14 @@ killasgroup=true
 stopsignal=TERM
 stopwaitsecs=45
 EOF
+fi
+
+if [[ $ownership_migration_needed == true ]]; then
+  : >"$ownership_marker"
+  chown root:root "$ownership_marker"
+  chmod 0600 "$ownership_marker"
+  startup_stage=ownership-migration
+  log_startup completed
 fi
 
 startup_stage=start-supervisor

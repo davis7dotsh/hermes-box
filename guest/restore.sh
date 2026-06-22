@@ -103,5 +103,8 @@ rm -f \
   /tmp/hermes-box-current-extract-executor.py \
   /tmp/hermes-box-current-workspace-seed.sh \
   /tmp/hermes-box-current-supervisord.conf
+rm -f \
+  /var/lib/hermes-box/runtime-ownership-repaired \
+  /var/lib/hermes-box/runtime-ownership-v*
 touch /var/lib/hermes-box/restore-ready
 sync

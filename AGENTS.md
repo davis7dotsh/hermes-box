@@ -41,6 +41,60 @@ project" means completing only the contributor setup in this section.
 `hermes-box.conf` is only needed for operating a real box. Do not create it just
 to work on code or run the normal checks.
 
+## Fresh Box Operator Workflow
+
+When the user says only `set up a new Hermes Box <repository URL>`, treat that
+as authorization to create and start one new box. Complete the safe machine
+work, then hand off only the browser/device authentication and secret-storage
+steps that require the user.
+
+1. Clone the supplied repository, enter it, read this file and `README.md`, and
+   run only the tool/version commands in Default Contributor Setup item 1. Do
+   not install extra project dependencies or run `make check` unless changing
+   code. If Go is missing or older than 1.24, install a supported macOS ARM64
+   release from <https://go.dev/dl/>. If smolvm is missing or is not exactly
+   1.0.4, install the official Darwin ARM64 asset from the
+   [v1.0.4 release](https://github.com/smol-machines/smolvm/releases/tag/v1.0.4).
+   Rerun all probes and resume this workflow at step 2; do not create or operate
+   any VM until the supported versions pass.
+2. Decide Executor before `init`; it cannot be added to an existing machine
+   without recreating that machine. For the generic one-prompt workflow, copy
+   `hermes-box.conf.example` to `hermes-box.conf` if it does not exist, then set
+   `HERMES_BOX_EXECUTOR_ENABLED=true` so the requested box supports tools and
+   integrations. Keep it `false` only when the user explicitly asks for a lean
+   box or no Executor, and tell them it was omitted. Full networking is already
+   the default.
+3. Inspect `smolvm machine list`, then check the SSH loopback port selected in
+   `hermes-box.conf` with `lsof` and, when enabled, its selected Executor port.
+   If the machine name, builder name, SSH port, or Executor port is in use, edit
+   that same config to choose distinct names and free non-primary ports. Never
+   stop, delete, or reuse an existing machine to make room.
+4. Run `./bin/hermes-box init`. Its preflight checks the supported host,
+   exact tool versions, secret mapping syntax and referenced host values,
+   writable data directories, port availability, and machine-name collisions
+   before generating a key or creating a builder. Fix the reported prerequisite
+   and rerun the same `init` command. Do not work around a failed preflight by
+   deleting an existing resource. If `init` instead reaches first runtime boot
+   and reports that it preserved the machine, follow its `start` resume command
+   so completed Codex setup and resumable Executor downloads are retained;
+   destroy it only when the user explicitly wants to discard that private
+   partial state and rebuild.
+5. Give the user the state-aware handoff printed by `init`: run `hermes auth add
+   openai-codex --type oauth` before `hermes model` so a ChatGPT/Codex inference
+   choice reuses that credential instead of starting a second device flow. Both
+   are separate from `codex login --device-auth`; Codex debugging belongs in
+   `tmux new -As codex`. For Executor, open the portal, create the admin account,
+   configure integrations/OAuth and a local API key, then run `executor auth
+   set` and `executor connect-hermes`. The first portable `package` must be
+   copied off-host as an encrypted `.tar` plus its `.sha256`, alongside a
+   separately protected copy of the exact SSH private key path. Include `stop`,
+   `start`, `status`, `logs -f`, and `shell` as recovery controls. Do not add a
+   redundant `mcp-test` step.
+
+Authentication URLs, one-time codes, account creation, OAuth grants, and
+placing the SSH key in the user's secret manager are human-only. Everything up
+to those boundaries should be completed without pausing for confirmation.
+
 ## Change Workflow
 
 - Keep the host CLI in Go under `cmd/` and `internal/`.
@@ -82,7 +136,6 @@ If a task explicitly requires a full lifecycle test, isolate every resource:
 export HERMES_BOX_MACHINE_NAME="hermes-box-agent-$$"
 export HERMES_BOX_BUILDER_NAME="hermes-builder-agent-$$"
 export HERMES_BOX_SSH_PORT=2223
-export HERMES_BOX_NETWORK_MODE=full
 export HERMES_BOX_E2E=1
 lsof -nP -iTCP:"$HERMES_BOX_SSH_PORT" -sTCP:LISTEN
 # If the previous command prints a listener, choose another non-primary port.

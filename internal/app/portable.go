@@ -3,7 +3,9 @@ package app
 import (
 	"archive/tar"
 	"context"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -18,9 +20,66 @@ import (
 //go:embed portable_agents.md
 var portableAgents string
 
+const (
+	portableArchiveTempPattern  = ".hermes-box-portable-*.tar.tmp"
+	portableChecksumTempPattern = ".hermes-box-portable-*.sha256.tmp"
+)
+
+var portableProjectDirectories = []string{
+	"bin",
+	"cmd",
+	"cmd/hermes-box",
+	"guest",
+	"internal",
+	"internal/app",
+	"internal/config",
+	"internal/process",
+	"tests",
+}
+
+var portableProjectFiles = []string{
+	"bin/hermes-box",
+	"cmd/hermes-box/main.go",
+	"guest/bootstrap.sh",
+	"guest/boxadmin.bash_profile",
+	"guest/entrypoint.sh",
+	"guest/executor.sh",
+	"guest/extract-executor.py",
+	"guest/hermes-box.sudoers",
+	"guest/hermes_gated_approval.py",
+	"guest/install-node.sh",
+	"guest/patch-hermes-gated-approval.py",
+	"guest/restore.sh",
+	"guest/snapshot.sh",
+	"guest/start.sh",
+	"guest/supervisord.conf",
+	"guest/workspace-seed.sh",
+	"internal/app/app.go",
+	"internal/app/backup.go",
+	"internal/app/executor.go",
+	"internal/app/host.go",
+	"internal/app/lifecycle.go",
+	"internal/app/portable.go",
+	"internal/app/portable_publish_darwin.go",
+	"internal/app/portable_publish_linux.go",
+	"internal/app/portable_publish_unsupported.go",
+	"internal/app/portable_agents.md",
+	"internal/config/config.go",
+	"internal/config/secrets.go",
+	"internal/process/process.go",
+	"tests/hermes-gated-approval.py",
+	"go.mod",
+	"Smolfile",
+	"README.md",
+	"PORTABLE_RESTORE.md",
+	"EXECUTOR_CONNECTIONS.md",
+	"hermes-box.conf.example",
+}
+
 func (a *App) cmdPackage(ctx context.Context, args []string) error {
 	label := "portable"
 	backupDir := ""
+	freshSnapshot := false
 	if len(args) > 0 && args[0] == "--snapshot" {
 		if len(args) < 2 || len(args) > 3 {
 			return errors.New("package --snapshot requires one .hermesbox directory and an optional label")
@@ -45,8 +104,22 @@ func (a *App) cmdPackage(ctx context.Context, args []string) error {
 		if err != nil {
 			return err
 		}
+		freshSnapshot = true
 	}
-	archivePath, err := a.createPortablePackage(backupDir, label)
+	var archivePath string
+	var err error
+	if freshSnapshot {
+		// snapshotInternal just created every archive index and checksum. Avoid
+		// rereading both large compressed archives before packaging them.
+		archivePath, err = a.createPortablePackageFromVerifiedBackupContext(
+			ctx,
+			backupDir,
+			filepath.Base(backupDir),
+			label,
+		)
+	} else {
+		archivePath, err = a.createPortablePackageContext(ctx, backupDir, label)
+	}
 	if err != nil {
 		return fmt.Errorf("snapshot saved at %s, but portable packaging failed: %w", backupDir, err)
 	}
@@ -55,7 +128,41 @@ func (a *App) cmdPackage(ctx context.Context, args []string) error {
 }
 
 func (a *App) createPortablePackage(backupDir, label string) (archivePath string, err error) {
-	if err := verifyBackup(backupDir); err != nil {
+	return a.createPortablePackageContext(context.Background(), backupDir, label)
+}
+
+func (a *App) createPortablePackageContext(
+	ctx context.Context,
+	backupDir,
+	label string,
+) (archivePath string, err error) {
+	staged, err := a.stageVerifiedBackupContext(ctx, backupDir)
+	if err != nil {
+		return "", err
+	}
+	defer func() {
+		cleanupErr := withRestoreCleanupContext(func(cleanupCtx context.Context) error {
+			return cleanupStagedBackup(cleanupCtx, staged)
+		})
+		if cleanupErr != nil {
+			err = errors.Join(err, fmt.Errorf("remove staged package backup: %w", cleanupErr))
+		}
+	}()
+	return a.createPortablePackageFromVerifiedBackupContext(
+		ctx,
+		staged,
+		filepath.Base(backupDir),
+		label,
+	)
+}
+
+func (a *App) createPortablePackageFromVerifiedBackupContext(
+	ctx context.Context,
+	backupDir,
+	backupName,
+	label string,
+) (string, error) {
+	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	if err := requireRegularFile(a.baseArtifact); err != nil {
@@ -67,27 +174,29 @@ func (a *App) createPortablePackage(backupDir, label string) (archivePath string
 		safeLabel = "portable"
 	}
 	stamp := time.Now().Format("20060102-150405")
-	archivePath = filepath.Join(
-		a.backupsDir,
-		fmt.Sprintf("hermes-box-portable-%s-%s.tar", stamp, safeLabel),
-	)
-	temporaryArchive := temporaryPath(archivePath)
-	checksumPath := archivePath + ".sha256"
-	defer func() {
-		if err != nil {
-			_ = os.Remove(temporaryArchive)
-			_ = os.Remove(archivePath)
-			_ = os.Remove(checksumPath)
-		}
-	}()
-
-	file, err := os.OpenFile(temporaryArchive, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	file, err := os.CreateTemp(a.backupsDir, portableArchiveTempPattern)
 	if err != nil {
 		return "", fmt.Errorf("create portable archive: %w", err)
 	}
-	archive := tar.NewWriter(file)
+	temporaryArchive := file.Name()
+	archiveTempOwned := true
+	defer func() {
+		if archiveTempOwned {
+			_ = os.Remove(temporaryArchive)
+		}
+	}()
+	if err := file.Chmod(0o600); err != nil {
+		_ = file.Close()
+		return "", fmt.Errorf("secure portable archive: %w", err)
+	}
+	hash := sha256.New()
+	archive := tar.NewWriter(io.MultiWriter(file, hash))
 	closeArchive := func() error {
 		if err := archive.Close(); err != nil {
+			_ = file.Close()
+			return err
+		}
+		if err := file.Sync(); err != nil {
 			_ = file.Close()
 			return err
 		}
@@ -95,11 +204,11 @@ func (a *App) createPortablePackage(backupDir, label string) (archivePath string
 	}
 
 	if err := writeTarDirectory(archive, "hermes-box", 0o700); err != nil {
-		_ = closeArchive()
+		_ = file.Close()
 		return "", err
 	}
-	if err := a.addProjectFiles(archive); err != nil {
-		_ = closeArchive()
+	if err := a.addProjectFiles(ctx, archive); err != nil {
+		_ = file.Close()
 		return "", err
 	}
 	if err := writeTarFile(
@@ -108,7 +217,7 @@ func (a *App) createPortablePackage(backupDir, label string) (archivePath string
 		[]byte(portableAgents),
 		0o600,
 	); err != nil {
-		_ = closeArchive()
+		_ = file.Close()
 		return "", err
 	}
 	if err := writeTarFile(
@@ -117,7 +226,7 @@ func (a *App) createPortablePackage(backupDir, label string) (archivePath string
 		[]byte(a.portableConfig()),
 		0o600,
 	); err != nil {
-		_ = closeArchive()
+		_ = file.Close()
 		return "", err
 	}
 	for _, directory := range []string{
@@ -126,119 +235,169 @@ func (a *App) createPortablePackage(backupDir, label string) (archivePath string
 		"hermes-box/state",
 	} {
 		if err := writeTarDirectory(archive, directory, 0o700); err != nil {
-			_ = closeArchive()
+			_ = file.Close()
 			return "", err
 		}
 	}
-	if err := addPathToTar(
+	if err := addPathToTarContext(
+		ctx,
 		archive,
 		a.baseArtifact,
 		"hermes-box/images/hermes-base.smolmachine",
 	); err != nil {
-		_ = closeArchive()
+		_ = file.Close()
 		return "", err
 	}
-	if err := addTreeToTar(
+	if err := addBackupToTarContext(
+		ctx,
 		archive,
 		backupDir,
-		filepath.ToSlash(filepath.Join("hermes-box", "backups", filepath.Base(backupDir))),
+		filepath.ToSlash(filepath.Join("hermes-box", "backups", backupName)),
 	); err != nil {
-		_ = closeArchive()
+		_ = file.Close()
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
+		_ = file.Close()
 		return "", err
 	}
 	if err := closeArchive(); err != nil {
 		return "", fmt.Errorf("finish portable archive: %w", err)
 	}
-	if err := os.Rename(temporaryArchive, archivePath); err != nil {
-		return "", fmt.Errorf("install portable archive: %w", err)
+
+	var archivePath, checksumPath string
+	for sequence := 1; ; sequence++ {
+		if err := ctx.Err(); err != nil {
+			return "", err
+		}
+		archivePath, checksumPath = portableOutputPaths(a.backupsDir, stamp, safeLabel, sequence)
+		conflict, err := portableOutputConflict(archivePath, checksumPath)
+		if err != nil {
+			return "", err
+		}
+		if conflict {
+			continue
+		}
+		if err := publishPortableFileNoReplace(temporaryArchive, archivePath); err != nil {
+			if errors.Is(err, fs.ErrExist) {
+				continue
+			}
+			return "", fmt.Errorf("install portable archive: %w", err)
+		}
+		archiveTempOwned = false
+		break
 	}
-	if err := ensurePrivateFile(archivePath); err != nil {
-		return "", err
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("portable archive retained at %s: %w", archivePath, err)
 	}
 
-	sum, err := fileChecksum(archivePath)
-	if err != nil {
-		return "", err
-	}
+	sum := hex.EncodeToString(hash.Sum(nil))
 	checksum := fmt.Sprintf("%s  %s\n", sum, filepath.Base(archivePath))
-	if err := os.WriteFile(checksumPath, []byte(checksum), 0o600); err != nil {
-		return "", fmt.Errorf("write portable checksum: %w", err)
+	checksumFile, err := os.CreateTemp(a.backupsDir, portableChecksumTempPattern)
+	if err != nil {
+		return "", fmt.Errorf("create portable checksum; archive retained at %s: %w", archivePath, err)
 	}
+	temporaryChecksum := checksumFile.Name()
+	checksumTempOwned := true
+	defer func() {
+		if checksumTempOwned {
+			_ = os.Remove(temporaryChecksum)
+		}
+	}()
+	if err := checksumFile.Chmod(0o600); err != nil {
+		_ = checksumFile.Close()
+		return "", fmt.Errorf("secure portable checksum; archive retained at %s: %w", archivePath, err)
+	}
+	if _, err := io.WriteString(checksumFile, checksum); err != nil {
+		_ = checksumFile.Close()
+		return "", fmt.Errorf("write portable checksum; archive retained at %s: %w", archivePath, err)
+	}
+	if err := checksumFile.Sync(); err != nil {
+		_ = checksumFile.Close()
+		return "", fmt.Errorf("sync portable checksum; archive retained at %s: %w", archivePath, err)
+	}
+	if err := checksumFile.Close(); err != nil {
+		return "", fmt.Errorf("finish portable checksum; archive retained at %s: %w", archivePath, err)
+	}
+	if err := ctx.Err(); err != nil {
+		return "", fmt.Errorf("portable archive retained at %s: %w", archivePath, err)
+	}
+	if err := publishPortableFileNoReplace(temporaryChecksum, checksumPath); err != nil {
+		return "", fmt.Errorf("install portable checksum; archive retained at %s: %w", archivePath, err)
+	}
+	checksumTempOwned = false
 	a.log("portable archive: %s", archivePath)
 	a.log("checksum: %s", checksumPath)
 	return archivePath, nil
 }
 
-func (a *App) addProjectFiles(archive *tar.Writer) error {
-	dataRoot := filepath.Dir(a.imagesDir)
-	dataRelative := ""
-	if relative, err := filepath.Rel(a.root, dataRoot); err == nil &&
-		relative != "." &&
-		relative != ".." &&
-		!strings.HasPrefix(relative, ".."+string(filepath.Separator)) {
-		dataRelative = filepath.Clean(relative)
+func portableOutputPaths(directory, stamp, label string, sequence int) (string, string) {
+	suffix := ""
+	if sequence > 1 {
+		suffix = fmt.Sprintf("-%d", sequence)
 	}
+	archivePath := filepath.Join(
+		directory,
+		fmt.Sprintf("hermes-box-portable-%s-%s%s.tar", stamp, label, suffix),
+	)
+	return archivePath, archivePath + ".sha256"
+}
 
-	return filepath.WalkDir(a.root, func(path string, entry fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
+func portableOutputConflict(paths ...string) (bool, error) {
+	for _, path := range paths {
+		if _, err := os.Lstat(path); err == nil {
+			return true, nil
+		} else if !os.IsNotExist(err) {
+			return false, fmt.Errorf("inspect portable output: %w", err)
 		}
-		relative, err := filepath.Rel(a.root, path)
-		if err != nil {
+	}
+	return false, nil
+}
+
+func publishPortableFileNoReplace(temporary, destination string) error {
+	return renameNoReplace(temporary, destination)
+}
+
+func (a *App) addProjectFiles(ctx context.Context, archive *tar.Writer) error {
+	for _, relative := range portableProjectDirectories {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if relative == "." {
-			return nil
+		source := filepath.Join(a.root, filepath.FromSlash(relative))
+		target := filepath.ToSlash(filepath.Join("hermes-box", filepath.FromSlash(relative)))
+		if err := requireDirectory(source); err != nil {
+			return err
 		}
-		if entry.IsDir() && isHermesDataRoot(path) {
-			return filepath.SkipDir
+		if err := addPathToTarContext(ctx, archive, source, target); err != nil {
+			return err
 		}
-		if filepath.Clean(path) == filepath.Clean(a.sshKey) {
-			return nil
+	}
+	for _, relative := range portableProjectFiles {
+		if err := ctx.Err(); err != nil {
+			return err
 		}
-		if shouldSkipPortableProjectPath(relative, dataRelative) {
-			if entry.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
+		source := filepath.Join(a.root, filepath.FromSlash(relative))
+		target := filepath.ToSlash(filepath.Join("hermes-box", filepath.FromSlash(relative)))
+		if err := requireRegularFile(source); err != nil {
+			return err
 		}
-		target := filepath.ToSlash(filepath.Join("hermes-box", relative))
-		return addPathToTar(archive, path, target)
-	})
-}
+		if err := addPathToTarContext(ctx, archive, source, target); err != nil {
+			return err
+		}
+	}
 
-func isHermesDataRoot(path string) bool {
-	for _, relative := range []string{"hermes-box.conf", "images", "backups", "state"} {
-		info, err := os.Stat(filepath.Join(path, relative))
-		if err != nil {
-			return false
-		}
-		if relative == "hermes-box.conf" && !info.Mode().IsRegular() {
-			return false
-		}
-		if relative != "hermes-box.conf" && !info.IsDir() {
-			return false
-		}
+	secretMappings := filepath.Join(a.root, "secret-env.txt")
+	info, err := os.Lstat(secretMappings)
+	if os.IsNotExist(err) {
+		return nil
 	}
-	return true
-}
-
-func shouldSkipPortableProjectPath(relative, dataRelative string) bool {
-	relative = filepath.Clean(relative)
-	first, _, _ := strings.Cut(relative, string(filepath.Separator))
-	switch first {
-	case ".git", "backups", "dist", "images", "state":
-		return true
+	if err != nil {
+		return fmt.Errorf("inspect secret mappings: %w", err)
 	}
-	if relative == "hermes-box.conf" {
-		return true
+	if !info.Mode().IsRegular() {
+		return errors.New("portable package requires secret-env.txt to be a regular file")
 	}
-	if relative == "AGENTS.md" {
-		return true
-	}
-	return dataRelative != "" &&
-		(relative == dataRelative ||
-			strings.HasPrefix(relative, dataRelative+string(filepath.Separator)))
+	return addPathToTarContext(ctx, archive, secretMappings, "hermes-box/secret-env.txt")
 }
 
 func (a *App) portableConfig() string {
@@ -266,6 +425,18 @@ func (a *App) portableConfig() string {
 }
 
 func addPathToTar(archive *tar.Writer, source, target string) error {
+	return addPathToTarContext(context.Background(), archive, source, target)
+}
+
+func addPathToTarContext(
+	ctx context.Context,
+	archive *tar.Writer,
+	source,
+	target string,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	info, err := os.Lstat(source)
 	if err != nil {
 		return fmt.Errorf("inspect %s: %w", source, err)
@@ -300,27 +471,49 @@ func addPathToTar(archive *tar.Writer, source, target string) error {
 		return fmt.Errorf("open %s: %w", source, err)
 	}
 	defer file.Close()
-	if _, err := io.Copy(archive, file); err != nil {
+	if _, err := io.Copy(archive, contextReader{ctx: ctx, reader: file}); err != nil {
 		return fmt.Errorf("archive contents of %s: %w", source, err)
 	}
 	return nil
 }
 
-func addTreeToTar(archive *tar.Writer, source, target string) error {
-	return filepath.WalkDir(source, func(path string, _ fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return walkErr
-		}
-		relative, err := filepath.Rel(source, path)
-		if err != nil {
+func addBackupToTar(archive *tar.Writer, source, target string) error {
+	return addBackupToTarContext(context.Background(), archive, source, target)
+}
+
+func addBackupToTarContext(
+	ctx context.Context,
+	archive *tar.Writer,
+	source,
+	target string,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := requireDirectory(source); err != nil {
+		return err
+	}
+	if err := writeTarDirectory(archive, target, 0o700); err != nil {
+		return err
+	}
+	for _, name := range append(append([]string{}, backupFiles...), "SHA256SUMS") {
+		if err := ctx.Err(); err != nil {
 			return err
 		}
-		entryTarget := target
-		if relative != "." {
-			entryTarget = filepath.ToSlash(filepath.Join(target, relative))
+		path := filepath.Join(source, name)
+		if err := requireRegularFile(path); err != nil {
+			return err
 		}
-		return addPathToTar(archive, path, entryTarget)
-	})
+		if err := addPathToTarContext(
+			ctx,
+			archive,
+			path,
+			filepath.ToSlash(filepath.Join(target, name)),
+		); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func writeTarDirectory(archive *tar.Writer, name string, mode fs.FileMode) error {
@@ -353,6 +546,17 @@ func requireRegularFile(path string) error {
 	}
 	if !info.Mode().IsRegular() {
 		return fmt.Errorf("portable package requires a regular file: %s", path)
+	}
+	return nil
+}
+
+func requireDirectory(path string) error {
+	info, err := os.Lstat(path)
+	if err != nil {
+		return fmt.Errorf("inspect %s: %w", path, err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("portable package requires a directory: %s", path)
 	}
 	return nil
 }

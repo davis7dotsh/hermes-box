@@ -12,9 +12,14 @@ fi
 : "${HERMES_BOX_MACHINE_NAME:?set a disposable machine name}"
 : "${HERMES_BOX_BUILDER_NAME:?set a disposable builder name}"
 : "${HERMES_BOX_SSH_PORT:?set a disposable SSH port}"
-: "${HERMES_BOX_NETWORK_MODE:?set HERMES_BOX_NETWORK_MODE=full}"
 
-if [[ ${HERMES_BOX_EXECUTOR_ENABLED:-false} == true ]]; then
+test_config=$(mktemp "${TMPDIR:-/tmp}/hermes-box-e2e-config.XXXXXX")
+export HERMES_BOX_CONFIG=$test_config
+export HERMES_BOX_EXECUTOR_ENABLED=${HERMES_BOX_EXECUTOR_ENABLED:-false}
+unset HERMES_BOX_NETWORK_MODE
+trap 'rm -f -- "$test_config"' EXIT
+
+if [[ $HERMES_BOX_EXECUTOR_ENABLED == true ]]; then
   : "${HERMES_BOX_EXECUTOR_PORT:?set a disposable Executor port}"
 fi
 
@@ -24,7 +29,7 @@ if [[ $HERMES_BOX_MACHINE_NAME == hermes-box ||
   printf 'refusing to use the primary machine, builder, or SSH port\n' >&2
   exit 1
 fi
-if [[ ${HERMES_BOX_EXECUTOR_ENABLED:-false} == true &&
+if [[ $HERMES_BOX_EXECUTOR_ENABLED == true &&
   $HERMES_BOX_EXECUTOR_PORT == 4788 ]]; then
   printf 'refusing to use the primary Executor port\n' >&2
   exit 1
@@ -36,6 +41,7 @@ export HERMES_BOX_DATA_DIR=$data_root
 cleanup() {
   ./bin/hermes-box destroy --force >/dev/null 2>&1 || true
   rm -rf -- "$data_root"
+  rm -f -- "$test_config"
 }
 trap cleanup EXIT
 
@@ -53,7 +59,7 @@ fi
 ./bin/hermes-box ssh 'sudo -iu hermes codex --help >/dev/null'
 ./bin/hermes-box ssh \
   'sudo -u hermes sudo supervisorctl status hermes | grep -Fq RUNNING'
-if [[ ${HERMES_BOX_EXECUTOR_ENABLED:-false} == true ]]; then
+if [[ $HERMES_BOX_EXECUTOR_ENABLED == true ]]; then
   ./bin/hermes-box ssh \
     'test ! -S /var/run/docker.sock && sudo -u hermes sudo supervisorctl status executor'
   ./bin/hermes-box ssh \
@@ -70,7 +76,7 @@ if [[ ${HERMES_BOX_EXECUTOR_ENABLED:-false} == true ]]; then
     exit 1
   fi
   ./bin/hermes-box ssh \
-    'sudo -u hermes sudo sh -c "printf executor-before-restore > /workspace/executor/data/hermes-box-e2e.txt"'
+    'sudo -u hermes sudo sh -c "umask 077; printf executor-before-restore > /workspace/executor/data/hermes-box-e2e.txt; chown root:root /workspace/executor/data/hermes-box-e2e.txt"'
 else
   ./bin/hermes-box ssh 'test ! -e /var/run/docker.sock'
 fi
@@ -81,29 +87,55 @@ backup=$(./bin/hermes-box snapshot end-to-end)
 ./bin/hermes-box ssh \
   'sudo -u hermes sh -c "printf after-snapshot > /workspace/work/hermes-box-e2e.txt"'
 
-./bin/hermes-box restore "$backup"
-restored=$(
-  ./bin/hermes-box ssh \
-    'sudo -u hermes cat /workspace/work/hermes-box-e2e.txt'
-)
-if [[ $restored != before-restore ]]; then
-  printf 'restore mismatch: %s\n' "$restored" >&2
-  exit 1
-fi
-if [[ ${HERMES_BOX_EXECUTOR_ENABLED:-false} == true ]]; then
-  executor_restored=$(
+verify_restored_state() {
+  local restore_kind=$1
+  local restored
+  restored=$(
     ./bin/hermes-box ssh \
-      'sudo -u hermes sudo cat /workspace/executor/data/hermes-box-e2e.txt'
+      'sudo -u hermes cat /workspace/work/hermes-box-e2e.txt'
   )
-  if [[ $executor_restored != executor-before-restore ]]; then
-    printf 'Executor restore mismatch: %s\n' "$executor_restored" >&2
+  if [[ $restored != before-restore ]]; then
+    printf '%s workspace mismatch: %s\n' "$restore_kind" "$restored" >&2
     exit 1
   fi
-  curl --max-time 10 -fsS \
-    "http://127.0.0.1:$HERMES_BOX_EXECUTOR_PORT/api/health" >/dev/null
-fi
+
+  if [[ $HERMES_BOX_EXECUTOR_ENABLED == true ]]; then
+    local executor_restored
+    executor_restored=$(
+      ./bin/hermes-box ssh \
+        'sudo -u hermes cat /workspace/executor/data/hermes-box-e2e.txt'
+    )
+    if [[ $executor_restored != executor-before-restore ]]; then
+      printf '%s Executor mismatch: %s\n' \
+        "$restore_kind" "$executor_restored" >&2
+      exit 1
+    fi
+    local executor_owner
+    executor_owner=$(
+      ./bin/hermes-box ssh \
+        'sudo -u hermes stat -c %U:%G /workspace/executor/data/hermes-box-e2e.txt'
+    )
+    if [[ $executor_owner != hermes:hermes ]]; then
+      printf '%s Executor ownership mismatch: %s\n' \
+        "$restore_kind" "$executor_owner" >&2
+      exit 1
+    fi
+    curl --max-time 10 -fsS \
+      "http://127.0.0.1:$HERMES_BOX_EXECUTOR_PORT/api/health" >/dev/null
+  fi
+}
+
+./bin/hermes-box restore "$backup"
+verify_restored_state replacement-restore
+
+# Exercise the direct fresh path with the same verified backup after the
+# replacement path has already proven candidate validation and swapping.
+./bin/hermes-box destroy --force
+./bin/hermes-box restore "$backup"
+verify_restored_state fresh-restore
 
 ./bin/hermes-box destroy --force
 rm -rf -- "$data_root"
+rm -f -- "$test_config"
 trap - EXIT
 printf 'disposable lifecycle test passed\n'

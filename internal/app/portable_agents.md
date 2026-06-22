@@ -46,8 +46,9 @@ chmod 600 images/hermes-base.smolmachine
 ./bin/hermes-box restore backups/*.hermesbox
 ```
 
-Restore verifies a temporary candidate before installing the recovered
-machine.
+On a fresh host, restore writes directly to the final machine and performs one
+complete health check. When replacing an existing machine, it first takes a
+safety snapshot and verifies a temporary candidate before replacement.
 
 ## Run
 

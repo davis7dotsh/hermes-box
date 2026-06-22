@@ -18,21 +18,28 @@ import (
 	"github.com/davis7dotsh/hermes-box/internal/process"
 )
 
-const executorGuestURL = "http://127.0.0.1:4788"
+const (
+	executorGuestURL        = "http://127.0.0.1:4788"
+	executorProbeTimeout    = 10 * time.Second
+	executorMetadataTimeout = 15 * time.Second
+	executorSizeTimeout     = 2 * time.Minute
+	executorSSHTimeout      = 2 * time.Minute
+)
 
 type executorStatus struct {
-	Enabled     bool   `json:"enabled"`
-	Machine     string `json:"machine"`
-	State       string `json:"state"`
-	URL         string `json:"url"`
-	Healthy     bool   `json:"healthy"`
-	HealthError string `json:"healthError,omitempty"`
-	AuthStored  bool   `json:"authStored"`
-	Supervisor  string `json:"supervisor,omitempty"`
-	Image       string `json:"image,omitempty"`
-	ImageDigest string `json:"imageDigest,omitempty"`
-	RuntimeSize string `json:"runtimeSize,omitempty"`
-	DataSize    string `json:"dataSize,omitempty"`
+	Enabled       bool   `json:"enabled"`
+	Machine       string `json:"machine"`
+	State         string `json:"state"`
+	URL           string `json:"url"`
+	Healthy       bool   `json:"healthy"`
+	HealthError   string `json:"healthError,omitempty"`
+	MetadataError string `json:"metadataError,omitempty"`
+	AuthStored    bool   `json:"authStored"`
+	Supervisor    string `json:"supervisor,omitempty"`
+	Image         string `json:"image,omitempty"`
+	ImageDigest   string `json:"imageDigest,omitempty"`
+	RuntimeSize   string `json:"runtimeSize,omitempty"`
+	DataSize      string `json:"dataSize,omitempty"`
 }
 
 type executorMCPClient struct {
@@ -103,7 +110,7 @@ func (a *App) executorUsage() {
 
 Commands:
   open                         Start Executor if needed and open its portal
-  status [--json]              Show runtime, health, image, and auth status
+  status [--json] [--sizes]    Show runtime, health, image, and auth status
   logs [-f] [-n LINES]         Show or follow Executor logs
   auth set|status|clear        Manage this box's API key in macOS Keychain
   connections [--json]         List configured Executor connections
@@ -123,22 +130,35 @@ func (a *App) executorURL() string {
 }
 
 func (a *App) ensureExecutorReady(ctx context.Context) error {
-	if !a.machineExists(ctx, a.config.MachineName) {
+	probeCtx, cancelProbe := context.WithTimeout(ctx, executorProbeTimeout)
+	exists, err := a.machineExists(probeCtx, a.config.MachineName)
+	cancelProbe()
+	if err != nil {
+		return fmt.Errorf("check Executor machine: %w", err)
+	}
+	if !exists {
 		return errors.New("run init first")
 	}
-	running, err := a.isRunning(ctx, a.config.MachineName)
+	probeCtx, cancelProbe = context.WithTimeout(ctx, executorProbeTimeout)
+	running, err := a.isRunning(probeCtx, a.config.MachineName)
+	cancelProbe()
 	if err != nil {
 		return err
 	}
 	if !running {
-		if err := a.cmdStart(ctx, nil); err != nil {
+		startCtx, cancelStart := context.WithTimeout(ctx, a.startupDeadline())
+		err := a.cmdStart(startCtx, nil)
+		cancelStart()
+		if err != nil {
 			return err
 		}
 	}
-	if err := a.verifyLoopbackListener(ctx, a.config.ExecutorPort); err != nil {
+	probeCtx, cancelProbe = context.WithTimeout(ctx, executorProbeTimeout)
+	defer cancelProbe()
+	if err := a.verifyLoopbackListener(probeCtx, a.config.ExecutorPort); err != nil {
 		return fmt.Errorf("executor listener is not loopback-only: %w", err)
 	}
-	return a.verifyExecutorHTTP(ctx)
+	return a.verifyExecutorHTTP(probeCtx)
 }
 
 func (a *App) cmdExecutorOpen(ctx context.Context, args []string) error {
@@ -155,36 +175,53 @@ func (a *App) cmdExecutorOpen(ctx context.Context, args []string) error {
 }
 
 func (a *App) cmdExecutorStatus(ctx context.Context, args []string) error {
-	jsonOutput, err := parseJSONOnlyOption("executor status", args)
+	jsonOutput, sizes, err := parseExecutorStatusOptions(args)
 	if err != nil {
 		return err
 	}
+	authCtx, cancelAuth := context.WithTimeout(ctx, executorProbeTimeout)
+	authStored := a.executorAuthStored(authCtx)
+	cancelAuth()
 	status := executorStatus{
 		Enabled:    a.config.ExecutorEnabled,
 		Machine:    a.config.MachineName,
 		State:      "missing",
 		URL:        a.executorURL(),
-		AuthStored: a.executorAuthStored(ctx),
+		AuthStored: authStored,
 	}
-	if a.machineExists(ctx, a.config.MachineName) {
-		status.State, err = a.machineState(ctx, a.config.MachineName)
+	probeCtx, cancelProbe := context.WithTimeout(ctx, executorProbeTimeout)
+	exists, err := a.machineExists(probeCtx, a.config.MachineName)
+	cancelProbe()
+	if err != nil {
+		return fmt.Errorf("check Executor machine: %w", err)
+	}
+	if exists {
+		probeCtx, cancelProbe = context.WithTimeout(ctx, executorProbeTimeout)
+		status.State, err = a.machineState(probeCtx, a.config.MachineName)
+		cancelProbe()
 		if err != nil {
 			return err
 		}
 	}
 	if status.Enabled && status.State == "running" {
-		if err := a.verifyLoopbackListener(ctx, a.config.ExecutorPort); err != nil {
+		probeCtx, cancelProbe = context.WithTimeout(ctx, executorProbeTimeout)
+		if err := a.verifyLoopbackListener(probeCtx, a.config.ExecutorPort); err != nil {
 			status.HealthError = fmt.Sprintf("Executor listener is unavailable or unsafe: %v", err)
-		} else if err := a.verifyExecutorHTTP(ctx); err != nil {
+		} else if err := a.verifyExecutorHTTP(probeCtx); err != nil {
 			status.HealthError = err.Error()
 		} else {
 			status.Healthy = true
 		}
-		metadata, metadataErr := a.executorRuntimeMetadata(ctx)
+		cancelProbe()
+		metadataTimeout := executorMetadataTimeout
+		if sizes {
+			metadataTimeout = executorSizeTimeout
+		}
+		metadataCtx, cancelMetadata := context.WithTimeout(ctx, metadataTimeout)
+		metadata, metadataErr := a.executorRuntimeMetadata(metadataCtx, sizes)
+		cancelMetadata()
 		if metadataErr != nil {
-			if status.HealthError == "" {
-				status.HealthError = metadataErr.Error()
-			}
+			status.MetadataError = metadataErr.Error()
 		} else {
 			status.Supervisor = metadata["supervisor"]
 			status.Image = metadata["image"]
@@ -196,15 +233,19 @@ func (a *App) cmdExecutorStatus(ctx context.Context, args []string) error {
 	return writeExecutorStatus(a.stdout, status, jsonOutput)
 }
 
-func (a *App) executorRuntimeMetadata(ctx context.Context) (map[string]string, error) {
+func (a *App) executorRuntimeMetadata(ctx context.Context, sizes bool) (map[string]string, error) {
 	script := `
-set -e
+set -euo pipefail
 printf 'supervisor=%s\n' "$(supervisorctl status executor | tr -s ' ')"
 printf 'image=%s\n' "$(cat /workspace/.hermes-box-runtime/executor/current/.image-reference)"
 printf 'digest=%s\n' "$(cat /workspace/.hermes-box-runtime/executor/current/.manifest-digest)"
-printf 'runtime_size=%s\n' "$(du -sh /workspace/.hermes-box-runtime/executor | cut -f1)"
-printf 'data_size=%s\n' "$(du -sh /workspace/executor/data | cut -f1)"
 `
+	if sizes {
+		script += `
+printf 'runtime_size=%s\n' "$(timeout --signal=TERM --kill-after=5s 45s du -sh /workspace/.hermes-box-runtime/executor | cut -f1)"
+printf 'data_size=%s\n' "$(timeout --signal=TERM --kill-after=5s 45s du -sh /workspace/executor/data | cut -f1)"
+`
+	}
 	output, err := a.output(
 		ctx,
 		"smolvm",
@@ -241,6 +282,9 @@ func writeExecutorStatus(writer io.Writer, status executorStatus, jsonOutput boo
 	if status.HealthError != "" {
 		fmt.Fprintf(writer, "Health err: %s\n", status.HealthError)
 	}
+	if status.MetadataError != "" {
+		fmt.Fprintf(writer, "Metadata err: %s\n", status.MetadataError)
+	}
 	if status.Supervisor != "" {
 		fmt.Fprintf(writer, "Supervisor: %s\n", status.Supervisor)
 	}
@@ -268,7 +312,11 @@ func (a *App) cmdExecutorLogs(ctx context.Context, args []string) error {
 	if err != nil {
 		return err
 	}
-	if !a.machineExists(ctx, a.config.MachineName) {
+	exists, err := a.machineExists(ctx, a.config.MachineName)
+	if err != nil {
+		return fmt.Errorf("check Executor machine: %w", err)
+	}
+	if !exists {
 		return errors.New("machine does not exist")
 	}
 	running, err := a.isRunning(ctx, a.config.MachineName)
@@ -496,6 +544,28 @@ func parseJSONOnlyOption(command string, args []string) (bool, error) {
 	return false, fmt.Errorf("usage: hermes-box %s [--json]", command)
 }
 
+func parseExecutorStatusOptions(args []string) (bool, bool, error) {
+	jsonOutput := false
+	sizes := false
+	for _, arg := range args {
+		switch arg {
+		case "--json":
+			if jsonOutput {
+				return false, false, errors.New("usage: hermes-box executor status [--json] [--sizes]")
+			}
+			jsonOutput = true
+		case "--sizes":
+			if sizes {
+				return false, false, errors.New("usage: hermes-box executor status [--json] [--sizes]")
+			}
+			sizes = true
+		default:
+			return false, false, errors.New("usage: hermes-box executor status [--json] [--sizes]")
+		}
+	}
+	return jsonOutput, sizes, nil
+}
+
 func (a *App) executorClient(ctx context.Context) (*executorMCPClient, error) {
 	if err := a.ensureExecutorReady(ctx); err != nil {
 		return nil, err
@@ -559,20 +629,32 @@ func (a *App) cmdExecutorConnectHermes(ctx context.Context, args []string) error
 	}
 	preflightPython := `import sys; from hermes_cli.mcp_config import _probe_single_server; token=sys.stdin.read().strip(); assert token; config={"url": "` + executorGuestURL + `/mcp", "headers": {"Authorization": "Bearer " + token}, "enabled": True}; tools=_probe_single_server("executor-preflight", config); assert sorted(tool[0] for tool in tools) == ["execute", "resume"], tools`
 	preflightRemote := "sudo -iu hermes env HERMES_HOME=/workspace/hermes-home /usr/local/lib/hermes-agent/venv/bin/python -c '" + preflightPython + "'"
-	if err := a.runner.Run(ctx, a.executorTokenSSHSpec(preflightRemote, apiKey)); err != nil {
+	sshCtx, cancelSSH := context.WithTimeout(ctx, executorSSHTimeout)
+	err = a.runner.Run(sshCtx, a.executorTokenSSHSpec(preflightRemote, apiKey))
+	cancelSSH()
+	if err != nil {
 		return fmt.Errorf("preflight Hermes MCP connection: %w", err)
 	}
 	python := `import sys; from hermes_cli.config import load_config, save_config, save_env_value; token=sys.stdin.read().strip(); assert token; save_env_value("MCP_EXECUTOR_API_KEY", token); config=load_config(); config.setdefault("mcp_servers", {})["executor"]={"url": "` + executorGuestURL + `/mcp", "headers": {"Authorization": "Bearer ${MCP_EXECUTOR_API_KEY}"}, "enabled": True}; save_config(config)`
 	remote := "sudo -iu hermes env HERMES_HOME=/workspace/hermes-home /usr/local/lib/hermes-agent/venv/bin/python -c '" + python + "'"
-	if err := a.runner.Run(ctx, a.executorTokenSSHSpec(remote, apiKey)); err != nil {
+	sshCtx, cancelSSH = context.WithTimeout(ctx, executorSSHTimeout)
+	err = a.runner.Run(sshCtx, a.executorTokenSSHSpec(remote, apiKey))
+	cancelSSH()
+	if err != nil {
 		return fmt.Errorf("configure Hermes MCP: %w", err)
 	}
 	testRemote := "sudo -iu hermes env HERMES_HOME=/workspace/hermes-home hermes mcp test executor"
-	if err := a.run(ctx, "ssh", a.sshArgs(a.config.SSHPort, testRemote)...); err != nil {
+	sshCtx, cancelSSH = context.WithTimeout(ctx, executorSSHTimeout)
+	err = a.run(sshCtx, "ssh", a.sshArgs(a.config.SSHPort, testRemote)...)
+	cancelSSH()
+	if err != nil {
 		return fmt.Errorf("test Hermes MCP connection: %w", err)
 	}
 	restartRemote := "sudo supervisorctl restart hermes && sudo supervisorctl status hermes"
-	if err := a.run(ctx, "ssh", a.sshArgs(a.config.SSHPort, restartRemote)...); err != nil {
+	sshCtx, cancelSSH = context.WithTimeout(ctx, executorSSHTimeout)
+	err = a.run(sshCtx, "ssh", a.sshArgs(a.config.SSHPort, restartRemote)...)
+	cancelSSH()
+	if err != nil {
 		return fmt.Errorf("restart Hermes gateway: %w", err)
 	}
 	fmt.Fprintln(a.stdout, "Hermes is connected to Executor as MCP server `executor`; start a new Hermes CLI session to load it")
