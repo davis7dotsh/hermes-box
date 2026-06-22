@@ -54,12 +54,16 @@ if ./bin/hermes-box ssh 'sudo -n true' >/dev/null 2>&1; then
   printf 'boxadmin unexpectedly obtained root sudo\n' >&2
   exit 1
 fi
-./bin/hermes-box ssh 'sudo -iu hermes hermes --version'
+./bin/hermes-box ssh 'sudo -iu hermes hermes --version | grep -Fq 0.17.0'
 ./bin/hermes-box ssh 'sudo -iu hermes hermes --help >/dev/null'
+./bin/hermes-box ssh \
+  "grep -Fqx 'commit=2bd1977d8fad185c9b4be47884f7e87f1add0ce3' /usr/local/lib/hermes-agent/.hermes-box-gated-approval"
+./bin/hermes-box ssh \
+  "sudo -iu hermes /usr/local/lib/hermes-agent/venv/bin/python -c 'import discord, multipart'"
 ./bin/hermes-box ssh 'sudo -iu hermes codex --strict-config --version'
 ./bin/hermes-box ssh 'sudo -iu hermes codex --help >/dev/null'
 ./bin/hermes-box ssh 'test -x /usr/local/bin/tm && test -f /etc/tmux.conf'
-./bin/hermes-box ssh 'infocmp -x tmux-256color >/dev/null && infocmp -x xterm-ghostty >/dev/null'
+./bin/hermes-box ssh 'infocmp -x tmux-256color >/dev/null && infocmp -x xterm-256color >/dev/null'
 ./bin/hermes-box ssh \
   'sudo -iu hermes tmux -L hermes-box-e2e -f /etc/tmux.conf new-session -d -s config-test && sudo -iu hermes tmux -L hermes-box-e2e show-options -gv mouse | grep -qx on && sudo -iu hermes tmux -L hermes-box-e2e kill-server'
 ./bin/hermes-box ssh \

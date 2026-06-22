@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 import json
 import math
@@ -289,6 +290,25 @@ class TestPatchedHermesIntegration(unittest.TestCase):
         self.assertEqual(captured["reasoning"]["effort"], "low")
         self.assertEqual(captured["service_tier"], "priority")
         self.assertEqual(captured["timeout"], 30)
+
+    def test_gateway_tool_event_import_is_callback_local(self):
+        gateway_path = Path(os.environ["HERMES_GATED_APPROVAL_SOURCE"]) / "gateway" / "run.py"
+        tree = ast.parse(gateway_path.read_text())
+        callbacks = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == "progress_callback"
+        ]
+        self.assertEqual(len(callbacks), 1)
+        imports = [
+            node
+            for node in ast.walk(callbacks[0])
+            if isinstance(node, ast.ImportFrom) and node.module == "tools.gated_approval"
+        ]
+        self.assertTrue(
+            any(alias.name == "append_gate_tool_event" for node in imports for alias in node.names)
+        )
 
 
 if __name__ == "__main__":

@@ -13,8 +13,8 @@ from pathlib import Path
 import yaml
 
 
-EXPECTED_COMMIT = "81eaedd0f5c471c7ee748990066135a684f3c962"
-EXPECTED_VERSION = 'version = "0.16.0"'
+EXPECTED_COMMIT = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3"
+EXPECTED_VERSION = 'version = "0.17.0"'
 
 
 def replace_once(text: str, old: str, new: str, label: str) -> str:
@@ -106,7 +106,6 @@ def patch_gateway(path: Path) -> None:
                 unregister_gateway_notify,
             )
             from tools.gated_approval import (
-                append_gate_tool_event,
                 reset_current_gate_context,
                 set_current_gate_context,
 ''',
@@ -119,6 +118,8 @@ def patch_gateway(path: Path) -> None:
 ''',
         '''        def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
+            from tools.gated_approval import append_gate_tool_event
+
             try:
                 append_gate_tool_event({
                     "event": event_type,
@@ -235,7 +236,7 @@ def main() -> int:
             f"unsupported Hermes revision {commit}; gated approval requires {EXPECTED_COMMIT}"
         )
     if EXPECTED_VERSION not in (args.source / "pyproject.toml").read_text():
-        raise RuntimeError("unsupported Hermes version; expected 0.16.0")
+        raise RuntimeError("unsupported Hermes version; expected 0.17.0")
 
     approval = args.source / "tools" / "approval.py"
     gateway = args.source / "gateway" / "run.py"
