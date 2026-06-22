@@ -12,6 +12,39 @@ cleanup() {
 }
 trap cleanup EXIT
 
+fail() {
+  printf 'tmux check failed: %s\n' "$1" >&2
+  exit 1
+}
+
+assert_equal() {
+  if [[ $1 == "$2" ]]; then
+    return
+  fi
+  fail "$3: got '$1', want '$2'"
+}
+
+assert_contains() {
+  if [[ $1 == *"$2"* ]]; then
+    return
+  fi
+  fail "$3: '$1' does not contain '$2'"
+}
+
+assert_line() {
+  if grep -Fxq -- "$2" <<<"$1"; then
+    return
+  fi
+  fail "$3: '$1' does not contain line '$2'"
+}
+
+assert_different() {
+  if [[ $1 != "$2" ]]; then
+    return
+  fi
+  fail "$3: both values are '$1'"
+}
+
 bash -n guest/tm
 bash -n guest/boxadmin.bash_profile
 
@@ -36,52 +69,69 @@ if command -v tmux >/dev/null 2>&1; then
     TERM_PROGRAM_VERSION=initial \
     tmux -L "$socket" -f guest/tmux.conf \
       new-session -d -s config-test -c "$temporary"
-  [[ $(tmux -L "$socket" show-options -gv default-terminal) == tmux-256color ]]
-  [[ $(tmux -L "$socket" show-options -gv mouse) == on ]]
-  [[ $(tmux -L "$socket" show-options -gv focus-events) == on ]]
-  [[ $(tmux -L "$socket" show-options -gv set-clipboard) == on ]]
-  [[ $(tmux -L "$socket" show-options -gv allow-passthrough) == on ]]
-  [[ $(tmux -L "$socket" show-options -sv extended-keys) == always ]]
+  assert_equal \
+    "$(tmux -L "$socket" show-options -gv default-terminal)" \
+    tmux-256color "default terminal"
+  assert_equal "$(tmux -L "$socket" show-options -gv mouse)" on "mouse"
+  assert_equal \
+    "$(tmux -L "$socket" show-options -gv focus-events)" on "focus events"
+  assert_equal \
+    "$(tmux -L "$socket" show-options -gv set-clipboard)" on "clipboard"
+  assert_equal \
+    "$(tmux -L "$socket" show-options -gv allow-passthrough)" on \
+    "visible-pane passthrough"
+  assert_equal \
+    "$(tmux -L "$socket" show-options -sv extended-keys)" always \
+    "extended keys"
   terminal_features=$(tmux -L "$socket" show-options -gv terminal-features)
-  [[ $terminal_features == *xterm\*:RGB* ]]
-  [[ $terminal_features == *xterm\*:extkeys* ]]
+  assert_contains "$terminal_features" 'xterm*:RGB' "terminal RGB"
+  assert_contains "$terminal_features" 'xterm*:extkeys' "terminal extended keys"
   update_environment=$(tmux -L "$socket" show-options -gv update-environment)
   for variable in COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION; do
-    [[ " $update_environment " == *" $variable "* ]]
+    assert_line "$update_environment" "$variable" "update-environment $variable"
   done
-  COLORTERM=truecolor \
+  printf 'detach-client\n' | env \
+    HOME="$temporary" \
+    COLORTERM=truecolor \
     TERM_PROGRAM=Ghostty \
     TERM_PROGRAM_VERSION=refresh-test \
-    tmux -L "$socket" new-session -d -s refresh-test -c "$temporary"
-  [[ $(
-    tmux -L "$socket" show-environment -g COLORTERM
-  ) == COLORTERM=truecolor ]]
-  [[ $(
-    tmux -L "$socket" show-environment -g TERM_PROGRAM
-  ) == TERM_PROGRAM=Ghostty ]]
-  [[ $(
-    tmux -L "$socket" show-environment -g TERM_PROGRAM_VERSION
-  ) == TERM_PROGRAM_VERSION=refresh-test ]]
-  [[ $(tmux -L "$socket" show-options -gv status-position) == bottom ]]
-  [[ $(tmux -L "$socket" show-options -gv status-style) == *fg=white* ]]
-  [[ $(tmux -L "$socket" show-options -gv status-style) == *bg=#006400* ]]
+    tmux -L "$socket" -C attach-session -t config-test >/dev/null
+  assert_equal \
+    "$(tmux -L "$socket" show-environment -t config-test COLORTERM)" \
+    COLORTERM=truecolor "refreshed COLORTERM"
+  assert_equal \
+    "$(tmux -L "$socket" show-environment -t config-test TERM_PROGRAM)" \
+    TERM_PROGRAM=Ghostty "refreshed TERM_PROGRAM"
+  assert_equal \
+    "$(tmux -L "$socket" show-environment -t config-test TERM_PROGRAM_VERSION)" \
+    TERM_PROGRAM_VERSION=refresh-test "refreshed TERM_PROGRAM_VERSION"
+  assert_equal \
+    "$(tmux -L "$socket" show-options -gv status-position)" bottom \
+    "status position"
+  status_style=$(tmux -L "$socket" show-options -gv status-style)
+  assert_contains "$status_style" 'fg=white' "status foreground"
+  assert_contains "$status_style" 'bg=#006400' "status background"
   window_style=$(tmux -L "$socket" show-options -gv window-status-style)
   current_window_style=$(
     tmux -L "$socket" show-options -gv window-status-current-style
   )
-  [[ $window_style == *fg=white* && $window_style == *bg=#006400* ]]
-  [[ $current_window_style == *fg=white* ]]
-  [[ $current_window_style == *bg=#006400* ]]
-  [[ $current_window_style == *bold* ]]
-  [[ $current_window_style == *underscore* ]]
-  [[ $current_window_style != "$window_style" ]]
+  assert_contains "$window_style" 'fg=white' "window foreground"
+  assert_contains "$window_style" 'bg=#006400' "window background"
+  assert_contains "$current_window_style" 'fg=white' \
+    "current window foreground"
+  assert_contains "$current_window_style" 'bg=#006400' \
+    "current window background"
+  assert_contains "$current_window_style" bold "current window bold"
+  assert_contains "$current_window_style" underscore "current window underline"
+  assert_different "$current_window_style" "$window_style" \
+    "current window differentiation"
   if [[ $(
     tmux -L "$socket" display-message -p -t config-test \
       '#{>=:#{version},3.5}'
   ) == 1 ]]; then
-    [[ $(
-      tmux -L "$socket" show-options -sv extended-keys-format
-    ) == csi-u ]]
+    assert_equal \
+      "$(tmux -L "$socket" show-options -sv extended-keys-format)" csi-u \
+      "extended key format"
   fi
 else
   printf 'tmux not installed; skipping live config parse\n' >&2
