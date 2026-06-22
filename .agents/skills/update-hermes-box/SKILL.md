@@ -9,7 +9,7 @@ Upgrade one or more Hermes Box components without weakening its host boundary,
 backup compatibility, reproducibility, or recovery path. Treat release discovery,
 implementation, lifecycle proof, and PR follow-through as one workflow.
 
-Read [references/components.md](references/components.md) for the selected
+Read [references/components.md](references/components.md) for each selected
 component before planning edits.
 
 ## Operating contract
@@ -52,8 +52,9 @@ git status --short --branch
 git remote -v
 gh auth status
 git fetch origin
-git switch main
-git pull --ff-only
+BASE_BRANCH=${BASE_BRANCH:-main}
+git switch "$BASE_BRANCH"
+git pull --ff-only origin "$BASE_BRANCH"
 ```
 
 Do not switch branches when the worktree contains overlapping user changes.
@@ -201,8 +202,8 @@ implementation pass, revalidate, then request focused re-review.
 ### 10. Commit and open a ready PR
 
 Inspect the final diff and ensure the worktree contains only intended files.
-Commit with a component-focused message, push, and open a ready PR against
-`main`.
+Commit with a component-focused message, push, and open a ready PR against the
+resolved base branch.
 
 The PR must state:
 
@@ -231,7 +232,7 @@ Address every current actionable thread, verify the pushed fix, then resolve
 the thread and read it back. Repeat until:
 
 - All required checks pass on the latest head.
-- The PR is mergeable and targets `main`.
+- The PR is mergeable and targets the resolved base branch.
 - No unresolved actionable review thread remains.
 - The local branch is clean and matches its remote.
 
