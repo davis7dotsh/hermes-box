@@ -41,8 +41,10 @@ grep -Fq 'configure-apt-snapshot.sh' release/build-provisioner.sh
 grep -Fq 'gpgv --keyring "$keyring" "$inrelease"' release/configure-apt-snapshot.sh
 grep -Fq 'APT::Snapshot=$UBUNTU_APT_SNAPSHOT' release/configure-apt-snapshot.sh
 grep -Fq 'Dir::State::status=$work/dpkg-status' release/build-provisioner.sh
-apt_snapshot=$(sed -n 's/^UBUNTU_APT_SNAPSHOT=//p' release/pins.env)
-grep -Fq "UBUNTU_APT_SNAPSHOT=$apt_snapshot" .github/workflows/release-artifacts.yml
+if grep -Fq 'APT::Snapshot=' .github/workflows/release-artifacts.yml; then
+  printf 'workflow must not apply the guest package snapshot to runner tooling\n' >&2
+  exit 1
+fi
 grep -Fq -- '--require-hashes' release/lib.sh
 grep -Fq 'remove_python_bytecode "$work/source"' release/build-hermes-source.sh
 grep -Fq 'tar -xf "$upstream" -C "$work/source" --strip-components=1' release/build-hermes-source.sh

@@ -30,10 +30,11 @@ jobs:
     steps:
       - name: Install build prerequisites
         run: |
-          UBUNTU_APT_SNAPSHOT=20260612T235959Z
-          apt-get -o "APT::Snapshot=$UBUNTU_APT_SNAPSHOT" update
+          # These packages run the build; they are not included in the guest
+          # provisioner closure. The closure itself is resolved and verified
+          # from the immutable snapshot below.
+          apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get \
-            -o "APT::Snapshot=$UBUNTU_APT_SNAPSHOT" \
             install -y --no-install-recommends \
             ca-certificates curl git jq sudo tar util-linux zstd
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -75,9 +76,8 @@ jobs:
           uv --version
       - name: Prove the exact Executor child loads and runs in Podman
         run: |
-          apt-get -o "APT::Snapshot=20260612T235959Z" update
+          apt-get update
           DEBIAN_FRONTEND=noninteractive apt-get \
-            -o "APT::Snapshot=20260612T235959Z" \
             install -y --no-install-recommends podman skopeo
           . release/pins.env
           repository=${EXECUTOR_IMAGE%%:*}
