@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"io"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -25,9 +26,14 @@ func TestNewDefaultAllowsTextCommandsOnUnsupportedContributorHost(t *testing.T) 
 	cli, err := newDefault(strings.NewReader(""), &stdout, io.Discard, nil, func(string) (keychain.Store, error) {
 		return nil, keychain.ErrUnavailable
 	})
-	if err != nil {
-		// On the supported Darwin host an unavailable Keychain is correctly fatal.
+	if runtime.GOOS == "darwin" {
+		if cli != nil || !errors.Is(err, keychain.ErrUnavailable) {
+			t.Fatalf("Darwin NewDefault result = %#v, error = %v", cli, err)
+		}
 		return
+	}
+	if err != nil {
+		t.Fatalf("unsupported contributor NewDefault error = %v", err)
 	}
 	if status := cli.Run(t.Context(), []string{"help"}); status != 0 || stdout.Len() == 0 {
 		t.Fatalf("unsupported contributor help status = %d, output = %q", status, stdout.String())

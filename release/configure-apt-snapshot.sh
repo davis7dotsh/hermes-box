@@ -66,7 +66,10 @@ for attempt in $(seq 1 30); do
         package_indexes_complete=false
         continue
       fi
-      actual=$(/usr/lib/apt/apt-helper cat-file "${component_packages[0]}" | sha256sum)
+      if ! actual=$(/usr/lib/apt/apt-helper cat-file "${component_packages[0]}" | sha256sum); then
+        package_indexes_complete=false
+        continue
+      fi
       actual=${actual%% *}
       if [[ ! $expected =~ ^[a-f0-9]{64}$ || ! $expected_size =~ ^[0-9]+$ || \
         $actual != "$expected" ]]; then
