@@ -21,37 +21,25 @@ ubuntu_sources=/etc/apt/sources.list.d/ubuntu.sources
   exit 1
 }
 
-# APT only applies APT::Snapshot to snapshot-enabled sources. Pin the exact
-# reviewed snapshot in every Ubuntu deb822 stanza before fetching indexes.
+# The Ubuntu ARM64 container uses ports.ubuntu.com, which APT does not advertise
+# as snapshot-capable. Point every Ubuntu deb822 stanza at Canonical's immutable
+# snapshot URL directly instead of relying on APT's snapshot auto-discovery.
 rewritten_sources=$(mktemp "${ubuntu_sources}.hermes-box.XXXXXX")
 trap 'rm -f "$rewritten_sources"' EXIT
 awk -v snapshot="$UBUNTU_APT_SNAPSHOT" '
-  function emit_snapshot() {
-    if (in_stanza) {
-      print "Snapshot: " snapshot
-    }
-  }
   /^[[:space:]]*Snapshot:/ { next }
-  /^[[:space:]]*$/ {
-    emit_snapshot()
-    print
-    in_stanza = 0
+  /^[[:space:]]*URIs:/ {
+    print "URIs: https://snapshot.ubuntu.com/ubuntu/" snapshot
     next
   }
-  {
-    print
-    if ($0 !~ /^[[:space:]]*#/) {
-      in_stanza = 1
-    }
-  }
-  END { emit_snapshot() }
+  { print }
 ' "$ubuntu_sources" >"$rewritten_sources"
 chmod --reference="$ubuntu_sources" "$rewritten_sources"
 mv "$rewritten_sources" "$ubuntu_sources"
 trap - EXIT
 
 rm -rf "${lists:?}"/*
-apt-get -o "APT::Snapshot=$UBUNTU_APT_SNAPSHOT" update
+apt-get update
 
 mapfile -t inreleases < <(find "$lists" -maxdepth 1 -type f -name '*InRelease' -print | sort)
 mapfile -t packages < <(find "$lists" -maxdepth 1 -type f -name '*Packages*' -print | sort)

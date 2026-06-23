@@ -39,9 +39,12 @@ grep -Fq 'xterm-ghostty.terminfo' release/build-provisioner.sh
 grep -Eq '^UBUNTU_APT_SNAPSHOT=[0-9]{8}T[0-9]{6}Z$' release/pins.env
 grep -Fq 'configure-apt-snapshot.sh' release/build-provisioner.sh
 grep -Fq 'gpgv --keyring "$keyring" "$inrelease"' release/configure-apt-snapshot.sh
-grep -Fq 'APT::Snapshot=$UBUNTU_APT_SNAPSHOT' release/configure-apt-snapshot.sh
-grep -Fq 'print "Snapshot: " snapshot' release/configure-apt-snapshot.sh
+grep -Fq 'https://snapshot.ubuntu.com/ubuntu/' release/configure-apt-snapshot.sh
 grep -Fq 'Dir::State::status=$work/dpkg-status' release/build-provisioner.sh
+if grep -RFq 'APT::Snapshot=' release .github/workflows/release-artifacts.yml; then
+  printf 'release flow must use the exact manual Ubuntu snapshot URL\n' >&2
+  exit 1
+fi
 if grep -Fq 'APT::Snapshot=' .github/workflows/release-artifacts.yml; then
   printf 'workflow must not apply the guest package snapshot to runner tooling\n' >&2
   exit 1
