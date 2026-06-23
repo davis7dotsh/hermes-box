@@ -28,7 +28,7 @@ mapfile -t packages < <(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$rele
 
 "$release_root/configure-apt-snapshot.sh" "$work/apt-metadata.txt"
 : >"$work/dpkg-status"
-apt-get --download-only --no-install-recommends \
+apt-get --assume-yes --download-only --no-install-recommends \
   -o "Dir::State::status=$work/dpkg-status" \
   -o "Dir::Cache::archives=$work/apt" install "${packages[@]}"
 find "$work/apt" -maxdepth 1 -type f -name '*.deb' -exec cp {} "$work/root/debs/" \;

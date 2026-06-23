@@ -41,6 +41,7 @@ grep -Fq 'configure-apt-snapshot.sh' release/build-provisioner.sh
 grep -Fq 'gpgv --keyring "$keyring" "$inrelease"' release/configure-apt-snapshot.sh
 grep -Fq 'https://snapshot.ubuntu.com/ubuntu/' release/configure-apt-snapshot.sh
 grep -Fq 'Dir::State::status=$work/dpkg-status' release/build-provisioner.sh
+grep -Fq 'apt-get --assume-yes --download-only' release/build-provisioner.sh
 if grep -RFq 'APT::Snapshot=' release .github/workflows/release-artifacts.yml; then
   printf 'release flow must use the exact manual Ubuntu snapshot URL\n' >&2
   exit 1
