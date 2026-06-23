@@ -80,6 +80,11 @@ grep -Fq 'git cat-file -t "$GITHUB_REF"' .github/workflows/release-artifacts.yml
 grep -Fq 'git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main' .github/workflows/release-artifacts.yml
 grep -Fq '"internal/**"' .github/workflows/release-artifacts.yml
 grep -Fq 'Prove the exact Executor child loads and runs in Podman' .github/workflows/release-artifacts.yml
+grep -Fq 'release/build-provisioner.sh "$artifact_dir"' .github/workflows/release-artifacts.yml
+if grep -Fq 'sudo release/build-provisioner.sh' .github/workflows/release-artifacts.yml; then
+  printf 'release builder must preserve the setup-go path inside the root container\n' >&2
+  exit 1
+fi
 grep -Fq -- '--cgroups=disabled' .github/workflows/release-artifacts.yml
 grep -Fq -- '--volume "$smoke_data:/data" "$runtime_tag"' .github/workflows/release-artifacts.yml
 grep -Fq -- "--format '{{.State.Status}}'" .github/workflows/release-artifacts.yml

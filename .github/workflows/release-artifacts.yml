@@ -124,7 +124,7 @@ jobs:
           build_set() {
             artifact_dir=$1
             mkdir -p "$artifact_dir"
-            sudo release/build-provisioner.sh "$artifact_dir"
+            release/build-provisioner.sh "$artifact_dir"
             release/build-hermes-source.sh "$artifact_dir"
             release/build-hermes-wheels.sh "$artifact_dir" \
               "$artifact_dir/hermes-agent-gated-0.17.0.tar.zst"
