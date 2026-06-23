@@ -30,9 +30,20 @@ mapfile -t packages < <(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$rele
 
 "$release_root/configure-apt-snapshot.sh" "$work/apt-metadata.txt"
 : >"$work/dpkg-status"
-apt-get --assume-yes --download-only --no-install-recommends \
-  -o "Dir::State::status=$work/dpkg-status" \
-  -o "Dir::Cache::archives=$apt_cache" install "${packages[@]}"
+downloaded=false
+for attempt in $(seq 1 30); do
+  if apt-get --assume-yes --download-only --no-install-recommends \
+    -o Acquire::Retries=10 \
+    -o "Dir::State::status=$work/dpkg-status" \
+    -o "Dir::Cache::archives=$apt_cache" install "${packages[@]}"; then
+    downloaded=true
+    break
+  fi
+  printf 'provisioner package attempt %d incomplete; retaining downloaded packages\n' \
+    "$attempt" >&2
+  sleep 15
+done
+[[ $downloaded == true ]]
 find "$apt_cache" -maxdepth 1 -type f -name '*.deb' -exec cp {} "$work/root/debs/" \;
 find "$work/root/debs" -type f -name '*.deb' -print -quit | grep -q . || {
   printf 'apt produced no provisioner packages\n' >&2

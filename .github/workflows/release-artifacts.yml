@@ -165,9 +165,19 @@ jobs:
           uv --version
       - name: Prove the exact Executor child loads and runs in Podman
         run: |
-          apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get \
-            install -y --no-install-recommends podman skopeo
+          installed=false
+          for attempt in $(seq 1 30); do
+            if DEBIAN_FRONTEND=noninteractive apt-get \
+              -o Acquire::Retries=10 \
+              install -y --no-install-recommends podman skopeo; then
+              installed=true
+              break
+            fi
+            printf 'Podman package attempt %d incomplete; retaining downloaded packages\n' \
+              "$attempt" >&2
+            sleep 15
+          done
+          [[ $installed == true ]]
           . release/pins.env
           repository=${EXECUTOR_IMAGE%%:*}
           runtime_tag=${EXECUTOR_IMAGE%@*}

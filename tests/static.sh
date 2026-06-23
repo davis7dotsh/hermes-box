@@ -46,6 +46,7 @@ grep -Fq 'gpgv --keyring "$keyring" "$inrelease"' release/configure-apt-snapshot
 grep -Fq 'https://snapshot.ubuntu.com/ubuntu/' release/configure-apt-snapshot.sh
 grep -Fq 'Dir::State::status=$work/dpkg-status' release/build-provisioner.sh
 grep -Fq 'apt-get --assume-yes --download-only' release/build-provisioner.sh
+grep -Fq 'provisioner package attempt %d incomplete; retaining downloaded packages' release/build-provisioner.sh
 grep -Fq 'HERMES_BOX_APT_CACHE' release/build-provisioner.sh
 grep -Fq 'HERMES_BOX_APT_CACHE' .github/workflows/release-artifacts.yml
 if grep -RFq 'APT::Snapshot=' release .github/workflows/release-artifacts.yml; then
@@ -131,6 +132,7 @@ grep -Fq -- '--verify-tag' .github/workflows/release-artifacts.yml
 grep -Fq 'git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main' .github/workflows/release-artifacts.yml
 grep -Fq '"internal/**"' .github/workflows/release-artifacts.yml
 grep -Fq 'Prove the exact Executor child loads and runs in Podman' .github/workflows/release-artifacts.yml
+grep -Fq 'Podman package attempt %d incomplete; retaining downloaded packages' .github/workflows/release-artifacts.yml
 grep -Fq 'release/build-provisioner.sh "$artifact_dir"' .github/workflows/release-artifacts.yml
 if grep -Fq 'sudo release/build-provisioner.sh' .github/workflows/release-artifacts.yml; then
   printf 'release builder must preserve the setup-go path inside the root container\n' >&2
