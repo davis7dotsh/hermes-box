@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/davis7dotsh/hermes-box/internal/backup"
+	"github.com/davis7dotsh/hermes-box/internal/component"
 	"github.com/davis7dotsh/hermes-box/internal/keychain"
 )
 
@@ -203,6 +204,32 @@ func TestTransactionRestoreRejectsArchiveDifferentFromRecordedSnapshot(t *testin
 	}
 	if err := verifyTransactionSnapshotArchive(record, backup.Envelope{ArchiveSHA256: "recorded"}); err != nil {
 		t.Fatalf("matching recorded checksum rejected: %v", err)
+	}
+}
+
+func TestSuccessfulMutationInvalidatesOnlyOverlappingSnapshots(t *testing.T) {
+	def := Definition{Name: "main", Home: t.TempDir()}
+	for _, name := range component.Names() {
+		path := transactionSnapshotPath(def, string(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("retained"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := invalidateOverlappingTransactionSnapshots(def, component.Hermes); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range component.Names() {
+		_, err := os.Stat(transactionSnapshotPath(def, string(name)))
+		invalidated := name == component.Node || name == component.UV
+		if invalidated && !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("overlapping %s snapshot was retained: %v", name, err)
+		}
+		if !invalidated && err != nil {
+			t.Errorf("non-overlapping %s snapshot was removed: %v", name, err)
+		}
 	}
 }
 

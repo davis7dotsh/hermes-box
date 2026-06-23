@@ -1,6 +1,7 @@
 package component
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -59,5 +60,23 @@ func TestSnapshotScopesAreComponentSpecific(t *testing.T) {
 	}
 	if got := SnapshotPaths(Executor); len(got) != 1 || got[0] != "executor" {
 		t.Fatalf("executor snapshot paths = %#v", got)
+	}
+}
+
+func TestOverlappingSnapshotComponents(t *testing.T) {
+	t.Parallel()
+	tests := map[Name][]Name{
+		Node:     {UV, Claude, Hermes},
+		UV:       {Node, Hermes},
+		Claude:   {Node},
+		Codex:    nil,
+		Hermes:   {Node, UV},
+		Executor: nil,
+	}
+	for name, want := range tests {
+		got := OverlappingSnapshotComponents(name)
+		if fmt.Sprint(got) != fmt.Sprint(want) {
+			t.Errorf("OverlappingSnapshotComponents(%s) = %v, want %v", name, got, want)
+		}
 	}
 }

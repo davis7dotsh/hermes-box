@@ -136,6 +136,26 @@ func SnapshotPaths(name Name) []string {
 	}
 }
 
+func OverlappingSnapshotComponents(name Name) []Name {
+	paths := make(map[string]struct{})
+	for _, path := range SnapshotPaths(name) {
+		paths[path] = struct{}{}
+	}
+	var overlaps []Name
+	for _, candidate := range dependencyOrder {
+		if candidate == name {
+			continue
+		}
+		for _, path := range SnapshotPaths(candidate) {
+			if _, ok := paths[path]; ok {
+				overlaps = append(overlaps, candidate)
+				break
+			}
+		}
+	}
+	return overlaps
+}
+
 func Known(name Name) bool {
 	for _, candidate := range dependencyOrder {
 		if candidate == name {

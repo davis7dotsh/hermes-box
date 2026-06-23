@@ -460,6 +460,27 @@ func transactionSnapshotPath(def Definition, target string) string {
 	return filepath.Join(def.Home, "backups", def.Name, "transactions", sanitizePin(target), "latest.json")
 }
 
+func invalidateOverlappingTransactionSnapshots(def Definition, target component.Name) error {
+	for _, overlapping := range component.OverlappingSnapshotComponents(target) {
+		path := transactionSnapshotPath(def, string(overlapping))
+		if err := os.Remove(path); errors.Is(err, os.ErrNotExist) {
+			continue
+		} else if err != nil {
+			return fmt.Errorf("invalidate overlapping %s transaction snapshot: %w", overlapping, err)
+		}
+		directory, err := os.Open(filepath.Dir(path))
+		if err != nil {
+			return fmt.Errorf("open overlapping %s snapshot directory: %w", overlapping, err)
+		}
+		syncErr := directory.Sync()
+		closeErr := directory.Close()
+		if syncErr != nil || closeErr != nil {
+			return fmt.Errorf("persist overlapping %s snapshot invalidation: %w", overlapping, errors.Join(syncErr, closeErr))
+		}
+	}
+	return nil
+}
+
 func loadTransactionSnapshot(path string) (transactionSnapshot, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {

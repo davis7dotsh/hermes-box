@@ -888,6 +888,10 @@ func (o *defaultOperations) Apply(ctx context.Context, def Definition, target st
 			recoverErr := o.completeHostUpdateRecovery(ctx, def, journal)
 			return nil, errors.Join(fmt.Errorf("publish %s host applied lock: %w", name, err), recoverErr)
 		}
+		if err := invalidateOverlappingTransactionSnapshots(def, spec.Name); err != nil {
+			recoverErr := o.completeHostUpdateRecovery(ctx, def, journal)
+			return nil, errors.Join(fmt.Errorf("invalidate snapshots overlapping %s: %w", name, err), recoverErr)
+		}
 		if err := store.ClearJournal(def.Name); err != nil {
 			recoverErr := o.completeHostUpdateRecovery(ctx, def, journal)
 			return nil, errors.Join(fmt.Errorf("clear %s update recovery state: %w", name, err), recoverErr)
@@ -957,6 +961,9 @@ func (o *defaultOperations) Rollback(ctx context.Context, def Definition, target
 	latestPath := filepath.Join(directory, "latest.json")
 	previous, err := loadTransactionSnapshot(latestPath)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("rollback snapshot for %s is unavailable or was invalidated by a later overlapping mutation", target)
+		}
 		return nil, fmt.Errorf("load retained pre-update snapshot: %w", err)
 	}
 	previousPath := filepath.Join(directory, "rollback-previous.json")
@@ -1035,6 +1042,9 @@ func (o *defaultOperations) completeHostRollback(_ context.Context, def Definiti
 	}
 	latestPath := filepath.Join(filepath.Dir(journal.Rollback.CurrentSnapshot), "latest.json")
 	if err := writeTransactionSnapshot(latestPath, current); err != nil {
+		return nil, err
+	}
+	if err := invalidateOverlappingTransactionSnapshots(def, component.Name(target)); err != nil {
 		return nil, err
 	}
 	if err := o.StartServices(recoveryCtx, def); err != nil {

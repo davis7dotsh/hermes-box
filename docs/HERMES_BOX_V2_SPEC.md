@@ -1218,7 +1218,10 @@ snapshot. Rollback restores the component snapshot before activating the prior
 release. Node and uv rollback rerun the same dependent Claude/Hermes health
 checks required during their update. Each component retains one encrypted
 snapshot beside its one previous release until the next successful update of
-that component replaces both.
+that component replaces both. A successful update or rollback invalidates every
+other retained snapshot whose durable scope overlaps the changed component.
+Rollback refuses a component whose snapshot was invalidated, so it can never
+restore older Claude or Hermes state over a later successful mutation.
 
 Full backups and component snapshots share the same service and filesystem
 freeze machinery, but only a full backup freezes and thaws the whole `agent`
