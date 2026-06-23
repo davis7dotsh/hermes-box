@@ -40,16 +40,17 @@ jobs:
       - name: Install build prerequisites
         run: |
           # Bootstrap archive-producing tools from the exact signed snapshot.
-          # The base image has no CA bundle. Bootstrap over HTTP, but verify
-          # every timestamp-specific InRelease hash before installing a byte.
+          # The base image has no CA bundle. Disable TLS peer verification only
+          # for bootstrap, while pinning every InRelease and retaining APT's
+          # signature and package-hash verification. Re-fetch normally below.
           sources=/etc/apt/sources.list.d/ubuntu.sources
           test -f "$sources"
           sed -i \
             -e '/^[[:space:]]*Snapshot:/d' \
-            -e "s|^[[:space:]]*URIs:.*|URIs: http://snapshot.ubuntu.com/ubuntu/$UBUNTU_APT_SNAPSHOT|" \
+            -e "s|^[[:space:]]*URIs:.*|URIs: https://snapshot.ubuntu.com/ubuntu/$UBUNTU_APT_SNAPSHOT|" \
             "$sources"
           rm -rf /var/lib/apt/lists/*
-          apt-get update
+          apt-get -o Acquire::https::Verify-Peer=false update
           seen=0
           for inrelease in /var/lib/apt/lists/*_InRelease; do
             case $(basename "$inrelease") in
@@ -68,6 +69,7 @@ jobs:
           done
           [[ $seen == 4 ]]
           DEBIAN_FRONTEND=noninteractive apt-get \
+            -o Acquire::https::Verify-Peer=false \
             install -y --no-install-recommends \
             ca-certificates curl git jq sudo tar util-linux zstd
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
