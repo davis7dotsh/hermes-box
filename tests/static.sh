@@ -73,6 +73,7 @@ if grep -REn 'uv run .*--with|pip (install|download).*setuptools==' release/*.sh
 fi
 
 grep -Fq 'pull_request:' .github/workflows/release-artifacts.yml
+grep -Fq 'shell: bash' .github/workflows/release-artifacts.yml
 grep -Fq 'v2.0.0-baseline-assets' .github/workflows/release-artifacts.yml
 grep -Fq 'v2.0.0-assets' .github/workflows/release-artifacts.yml
 grep -Fq 'git cat-file -t "$GITHUB_REF"' .github/workflows/release-artifacts.yml
@@ -80,6 +81,8 @@ grep -Fq 'git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main' .
 grep -Fq '"internal/**"' .github/workflows/release-artifacts.yml
 grep -Fq 'Prove the exact Executor child loads and runs in Podman' .github/workflows/release-artifacts.yml
 grep -Fq -- '--cgroups=disabled' .github/workflows/release-artifacts.yml
+grep -Fq -- '--volume "$smoke_data:/data" "$runtime_tag"' .github/workflows/release-artifacts.yml
+grep -Fq -- "--format '{{.State.Status}}'" .github/workflows/release-artifacts.yml
 grep -Fq 'actions/attest-build-provenance@' .github/workflows/release-artifacts.yml
 grep -Fq 'HERMES_BOX_E2E_LOCK' tests/lifecycle.sh
 grep -Fq 'HERMES_BOX_E2E_ARTIFACT_DIR' tests/lifecycle.sh

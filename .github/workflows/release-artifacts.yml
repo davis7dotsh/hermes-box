@@ -24,6 +24,9 @@ permissions:
 jobs:
   build-and-verify:
     runs-on: ubuntu-24.04-arm
+    defaults:
+      run:
+        shell: bash
     container:
       image: ubuntu:26.04@sha256:f47064f97ed1768de77e64328d8206990d8a8502ba64e24506ff35cc47fdaf1c
       options: --privileged
@@ -92,10 +95,30 @@ jobs:
             --format '{{.Architecture}}' "$runtime_tag")" = arm64
           test "$(podman --storage-driver=vfs image inspect \
             --format '{{.Digest}}' "$runtime_tag")" = "$EXECUTOR_ARM64_DIGEST"
-          podman --storage-driver=vfs run --rm --pull=never --network=none \
-            --cgroups=disabled \
-            --read-only --entrypoint /bin/sh "$runtime_tag" \
-            -c 'test "$(uname -m)" = aarch64'
+          smoke_data="$RUNNER_TEMP/executor-smoke-data"
+          mkdir -p "$smoke_data"
+          container=$(podman --storage-driver=vfs run --detach --pull=never \
+            --network=none --cgroups=disabled \
+            --volume "$smoke_data:/data" "$runtime_tag")
+          cleanup() {
+            podman --storage-driver=vfs rm --force "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          running=false
+          for _ in 1 2 3 4 5; do
+            if [[ $(podman --storage-driver=vfs inspect \
+              --format '{{.State.Status}}' "$container") == running ]]; then
+              running=true
+              break
+            fi
+            sleep 1
+          done
+          [[ $running == true ]] || {
+            podman --storage-driver=vfs logs "$container" >&2 || true
+            exit 1
+          }
+          cleanup
+          trap - EXIT
       - name: Build twice and prove deterministic outputs
         run: |
           build_set() {
