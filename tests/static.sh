@@ -107,6 +107,7 @@ grep -Fq 'needs: [build-and-verify, verify-release-tag]' .github/workflows/relea
 grep -Fq 'URIs: https://snapshot.ubuntu.com/ubuntu/$UBUNTU_APT_SNAPSHOT' .github/workflows/release-artifacts.yml
 grep -Fq 'Acquire::https::Verify-Peer=false' .github/workflows/release-artifacts.yml
 grep -Fq 'snapshot bootstrap attempt %d incomplete; retaining verified lists' .github/workflows/release-artifacts.yml
+grep -Fq 'bootstrap package attempt %d incomplete; retaining downloaded packages' .github/workflows/release-artifacts.yml
 grep -Fq 'snapshot verification attempt %d incomplete; retaining verified lists' release/configure-apt-snapshot.sh
 grep -Fq 'Acquire::GzipIndexes=false' .github/workflows/release-artifacts.yml
 grep -Fq 'component/binary-arm64/Packages' .github/workflows/release-artifacts.yml
