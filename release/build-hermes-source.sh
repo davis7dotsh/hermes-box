@@ -17,8 +17,8 @@ mkdir -p "$output_dir" "$work/python" "$work/python-build-wheels"
 python_archive="$work/python.tar.gz"
 download "$PYTHON_URL" "$python_archive" "$PYTHON_SHA256"
 tar -xf "$python_archive" -C "$work/python" --strip-components=1
-python=$(find "$work/python" -type f -name python3 -perm -111 | head -1)
-[[ -n $python ]] || { printf 'embedded Python executable was not found\n' >&2; exit 1; }
+python="$work/python/bin/python3.13"
+[[ -x $python ]] || { printf 'embedded Python executable was not found: %s\n' "$python" >&2; exit 1; }
 uv venv --python "$python" "$work/builder"
 download_python_build_wheels "$work/python-build-wheels"
 install_python_build_tools "$work/builder/bin/python" "$work/python-build-wheels"

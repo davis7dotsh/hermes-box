@@ -23,8 +23,8 @@ mkdir -p "$output_dir" "$work/python" "$work/source" "$work/wheelhouse" \
 python_archive="$work/python.tar.gz"
 download "$PYTHON_URL" "$python_archive" "$PYTHON_SHA256"
 tar -xf "$python_archive" -C "$work/python" --strip-components=1
-python=$(find "$work/python" -type f -name python3 -perm -111 | head -1)
-[[ -n $python ]] || { printf 'embedded Python executable was not found\n' >&2; exit 1; }
+python="$work/python/bin/python3.13"
+[[ -x $python ]] || { printf 'embedded Python executable was not found: %s\n' "$python" >&2; exit 1; }
 tar --zstd -xf "$source_artifact" -C "$work/source" --strip-components=1
 verify_sha256 "$work/source/uv.lock" "$HERMES_UV_LOCK_SHA256"
 

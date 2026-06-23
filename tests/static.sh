@@ -52,6 +52,8 @@ if grep -Fq 'APT::Snapshot=' .github/workflows/release-artifacts.yml; then
 fi
 grep -Fq -- '--require-hashes' release/lib.sh
 grep -Fq 'remove_python_bytecode "$work/source"' release/build-hermes-source.sh
+grep -Fq 'python="$work/python/bin/python3.13"' release/build-hermes-source.sh
+grep -Fq 'python="$work/python/bin/python3.13"' release/build-hermes-wheels.sh
 grep -Fq 'tar -xf "$upstream" -C "$work/source" --strip-components=1' release/build-hermes-source.sh
 if grep -Fq 'git -C "$work/source" fetch' release/build-hermes-source.sh; then
   printf 'Hermes source builder downloaded a verified archive but ignored it\n' >&2
