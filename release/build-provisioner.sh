@@ -33,7 +33,8 @@ mapfile -t packages < <(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$rele
 downloaded=false
 for attempt in $(seq 1 30); do
   if apt-get --assume-yes --download-only --no-install-recommends \
-    -o Acquire::Retries=10 \
+    -o Acquire::https::Timeout=20 \
+    -o Acquire::Retries=3 \
     -o "Dir::State::status=$work/dpkg-status" \
     -o "Dir::Cache::archives=$apt_cache" install "${packages[@]}"; then
     downloaded=true

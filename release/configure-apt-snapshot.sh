@@ -41,7 +41,8 @@ trap - EXIT
 rm -rf "${lists:?}"/*
 ready=false
 for attempt in $(seq 1 30); do
-  apt-get -o Acquire::GzipIndexes=false update || true
+  apt-get -o Acquire::https::Timeout=20 \
+    -o Acquire::GzipIndexes=false update || true
   mapfile -t inreleases < <(find "$lists" -maxdepth 1 -type f -name '*InRelease' -print | sort)
   mapfile -t packages < <(find "$lists" -maxdepth 1 -type f -name '*Packages*' -print | sort)
   package_indexes_complete=true
