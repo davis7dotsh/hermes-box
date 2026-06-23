@@ -7,7 +7,7 @@ repo_root=''
 # shellcheck source=release/lib.sh
 source "$script_dir/lib.sh"
 require_linux_arm64
-require_command apt-get find gpgv sort
+require_command apt-get awk chmod find gpgv mv sort
 [[ $EUID -eq 0 ]] || {
   printf 'configure-apt-snapshot.sh must run as root\n' >&2
   exit 1
@@ -15,6 +15,41 @@ require_command apt-get find gpgv sort
 
 metadata_output=${1:-}
 lists=/var/lib/apt/lists
+ubuntu_sources=/etc/apt/sources.list.d/ubuntu.sources
+[[ -f $ubuntu_sources ]] || {
+  printf 'Ubuntu deb822 sources are missing: %s\n' "$ubuntu_sources" >&2
+  exit 1
+}
+
+# APT only applies APT::Snapshot to snapshot-enabled sources. Pin the exact
+# reviewed snapshot in every Ubuntu deb822 stanza before fetching indexes.
+rewritten_sources=$(mktemp "${ubuntu_sources}.hermes-box.XXXXXX")
+trap 'rm -f "$rewritten_sources"' EXIT
+awk -v snapshot="$UBUNTU_APT_SNAPSHOT" '
+  function emit_snapshot() {
+    if (in_stanza) {
+      print "Snapshot: " snapshot
+    }
+  }
+  /^[[:space:]]*Snapshot:/ { next }
+  /^[[:space:]]*$/ {
+    emit_snapshot()
+    print
+    in_stanza = 0
+    next
+  }
+  {
+    print
+    if ($0 !~ /^[[:space:]]*#/) {
+      in_stanza = 1
+    }
+  }
+  END { emit_snapshot() }
+' "$ubuntu_sources" >"$rewritten_sources"
+chmod --reference="$ubuntu_sources" "$rewritten_sources"
+mv "$rewritten_sources" "$ubuntu_sources"
+trap - EXIT
+
 rm -rf "${lists:?}"/*
 apt-get -o "APT::Snapshot=$UBUNTU_APT_SNAPSHOT" update
 
