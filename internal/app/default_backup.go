@@ -498,6 +498,9 @@ func (o *defaultOperations) restoreTransactionSnapshotRecord(ctx context.Context
 		return fmt.Errorf("verify retained transaction snapshot: %w", err)
 	}
 	defer bundle.Cleanup()
+	if err := verifyTransactionSnapshotArchive(record, bundle.Envelope); err != nil {
+		return err
+	}
 	if len(component.SnapshotPaths(component.Name(target))) == 0 {
 		return fmt.Errorf("component %q has no snapshot contract", target)
 	}
@@ -536,6 +539,13 @@ func (o *defaultOperations) restoreTransactionSnapshotRecord(ctx context.Context
 	}
 	if err := decodeGuestResult(response.Result, &restored); err != nil || !restored.Restored {
 		return errors.Join(err, errors.New("guest scoped restore did not confirm restoration"))
+	}
+	return nil
+}
+
+func verifyTransactionSnapshotArchive(record transactionSnapshot, envelope backup.Envelope) error {
+	if envelope.ArchiveSHA256 != record.Backup.ArchiveSHA256 {
+		return errors.New("retained transaction snapshot checksum changed")
 	}
 	return nil
 }

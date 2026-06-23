@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -13,6 +14,10 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	cli := app.NewDefault(os.Stdin, os.Stdout, os.Stderr, os.Environ())
+	cli, err := app.NewDefault(os.Stdin, os.Stdout, os.Stderr, os.Environ())
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "hermes-box: %v\n", err)
+		os.Exit(1)
+	}
 	os.Exit(cli.Run(ctx, os.Args[1:]))
 }

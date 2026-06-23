@@ -42,6 +42,8 @@ grep -Fq 'gpgv --keyring "$keyring" "$inrelease"' release/configure-apt-snapshot
 grep -Fq 'https://snapshot.ubuntu.com/ubuntu/' release/configure-apt-snapshot.sh
 grep -Fq 'Dir::State::status=$work/dpkg-status' release/build-provisioner.sh
 grep -Fq 'apt-get --assume-yes --download-only' release/build-provisioner.sh
+grep -Fq 'HERMES_BOX_APT_CACHE' release/build-provisioner.sh
+grep -Fq 'HERMES_BOX_APT_CACHE' .github/workflows/release-artifacts.yml
 if grep -RFq 'APT::Snapshot=' release .github/workflows/release-artifacts.yml; then
   printf 'release flow must use the exact manual Ubuntu snapshot URL\n' >&2
   exit 1
@@ -52,14 +54,32 @@ if grep -Fq 'APT::Snapshot=' .github/workflows/release-artifacts.yml; then
 fi
 grep -Fq -- '--require-hashes' release/lib.sh
 grep -Fq 'remove_python_bytecode "$work/source"' release/build-hermes-source.sh
+grep -Fq '"$work/source/hermes_box_release/test_gated_approval.py"' release/build-hermes-source.sh
+grep -Fq '"$work/source/hermes_box_release/patch-hermes-gated-approval.py"' release/build-hermes-source.sh
 grep -Fq 'python="$work/python/bin/python3.13"' release/build-hermes-source.sh
 grep -Fq 'python="$work/python/bin/python3.13"' release/build-hermes-wheels.sh
+grep -Fq -- '--python-platform aarch64-manylinux_2_17' release/build-hermes-wheels.sh
+grep -Fq -- '--generate-hashes --no-header --no-annotate' release/build-hermes-wheels.sh
+grep -Fq 'requirements-linux-arm64.txt' release/build-hermes-wheels.sh
+grep -Fq 'project_wheel=' release/build-hermes-wheels.sh
+grep -Fq 'pip wheel --no-deps --no-build-isolation' release/build-hermes-wheels.sh
+grep -Fq '"--require-hashes", "--requirement", wheelManifest.Requirements' internal/guestupdate/installers.go
+grep -Fq '"--no-deps", wheelManifest.ProjectWheel' internal/guestupdate/installers.go
+if grep -Fq 'uv sync' release/build-hermes-wheels.sh internal/guestupdate/installers.go; then
+  printf 'Hermes offline install must not re-resolve the universal uv lock\n' >&2
+  exit 1
+fi
+if grep -Fq '"-m", "pytest"' internal/guestupdate/installers.go; then
+  printf 'Hermes guest approval validation must use the sealed regression runner\n' >&2
+  exit 1
+fi
 grep -Fq 'tar -xf "$upstream" -C "$work/source" --strip-components=1' release/build-hermes-source.sh
 if grep -Fq 'git -C "$work/source" fetch' release/build-hermes-source.sh; then
   printf 'Hermes source builder downloaded a verified archive but ignored it\n' >&2
   exit 1
 fi
 grep -Fq 'gated Hermes source archive contains Python bytecode' release/verify-release.sh
+grep -Fq 'offline Linux ARM64 requirements contain a Windows-only dependency' release/verify-release.sh
 grep -Eq '^pip==[^ ]+ --hash=sha256:[a-f0-9]{64}$' release/python-build-requirements.txt
 grep -Eq '^PyYAML==[^ ]+ --hash=sha256:[a-f0-9]{64}$' release/python-build-requirements.txt
 grep -Eq '^setuptools==[^ ]+ --hash=sha256:[a-f0-9]{64}$' release/python-build-requirements.txt
@@ -79,6 +99,7 @@ grep -Fq 'pull_request:' .github/workflows/release-artifacts.yml
 grep -Fq 'shell: bash' .github/workflows/release-artifacts.yml
 grep -Fq 'v2.0.0-baseline-assets' .github/workflows/release-artifacts.yml
 grep -Fq 'v2.0.0-assets' .github/workflows/release-artifacts.yml
+grep -Fq -- '-> release/qualification.lock.template' .agents/skills/update-hermes-box/references/components.md
 grep -Fq 'git cat-file -t "$GITHUB_REF"' .github/workflows/release-artifacts.yml
 grep -Fq 'git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main' .github/workflows/release-artifacts.yml
 grep -Fq '"internal/**"' .github/workflows/release-artifacts.yml

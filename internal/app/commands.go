@@ -285,7 +285,12 @@ func (c *CLI) logs(ctx context.Context, def Definition, inv invocation) (any, in
 		_, err := fmt.Fprint(c.stdout, output.String())
 		return nil, -1, err
 	}
-	return map[string]any{"target": target, "lines": strings.Split(strings.TrimSuffix(output.String(), "\n"), "\n")}, -1, nil
+	trimmed := strings.TrimSuffix(output.String(), "\n")
+	linesJSON := []string{}
+	if trimmed != "" {
+		linesJSON = strings.Split(trimmed, "\n")
+	}
+	return map[string]any{"target": target, "lines": linesJSON}, -1, nil
 }
 
 func (c *CLI) open(ctx context.Context, def Definition, inv invocation) (any, int, error) {

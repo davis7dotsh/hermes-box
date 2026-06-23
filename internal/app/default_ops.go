@@ -46,12 +46,14 @@ func (buffer *boundedProtocolBuffer) Write(value []byte) (int, error) {
 		maximum = maximumGuestResponseBytes
 	}
 	remaining := maximum - buffer.buffer.Len()
-	if remaining <= 0 || len(value) > remaining {
-		if remaining > 0 {
-			_, _ = buffer.buffer.Write(value[:remaining])
-		}
+	if remaining <= 0 {
 		buffer.exceeded = true
 		return 0, fmt.Errorf("guest response exceeds %d-byte protocol limit", maximum)
+	}
+	if len(value) > remaining {
+		written, _ := buffer.buffer.Write(value[:remaining])
+		buffer.exceeded = true
+		return written, fmt.Errorf("guest response exceeds %d-byte protocol limit", maximum)
 	}
 	return buffer.buffer.Write(value)
 }
@@ -496,10 +498,9 @@ PROVISIONER_DIR="$stage" "$stage/bootstrap.sh" "$stage" %q
 	return o.guestShell(ctx, def, nil, "sudo", "/bin/sh", "-ceu", script)
 }
 
-func (o *defaultOperations) CleanupCreate(ctx context.Context, def Definition) error {
+func (o *defaultOperations) CleanupCreate(_ context.Context, def Definition) error {
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), hostCleanupTimeout)
 	defer cancel()
-	ctx = cleanupCtx
 	client, clientErr := o.client(def)
 	store, storeErr := o.store(def)
 	if clientErr != nil || storeErr != nil {
@@ -518,7 +519,7 @@ func (o *defaultOperations) CleanupCreate(ctx context.Context, def Definition) e
 	if !createdVM && !createdDisk {
 		return cleanupCreateState(store, def)
 	}
-	metadata, metadataFound, err := store.LoadMetadata(def.Name)
+	_, metadataFound, err := store.LoadMetadata(def.Name)
 	if err != nil {
 		return err
 	}
@@ -526,8 +527,8 @@ func (o *defaultOperations) CleanupCreate(ctx context.Context, def Definition) e
 		// Metadata is deliberately removed before the journal. This is the only
 		// safe crash window without ownership metadata: cleanup may finish only
 		// after proving both exact names absent.
-		_, vmExists, vmErr := client.InspectInstance(ctx, names.VM)
-		_, diskExists, diskErr := client.InspectDisk(ctx, names.DataDisk)
+		_, vmExists, vmErr := client.InspectInstance(cleanupCtx, names.VM)
+		_, diskExists, diskErr := client.InspectDisk(cleanupCtx, names.DataDisk)
 		if vmErr != nil || diskErr != nil {
 			return errors.Join(vmErr, diskErr)
 		}
@@ -536,15 +537,15 @@ func (o *defaultOperations) CleanupCreate(ctx context.Context, def Definition) e
 		}
 		return cleanupCreateState(store, def)
 	}
-	metadata, err = store.VerifyOwnership(def.Name, def.ConfigDir)
+	metadata, err := store.VerifyOwnership(def.Name, def.ConfigDir)
 	if err != nil {
 		return err
 	}
-	instance, vmExists, err := client.InspectInstance(ctx, names.VM)
+	instance, vmExists, err := client.InspectInstance(cleanupCtx, names.VM)
 	if err != nil {
 		return err
 	}
-	disk, diskExists, err := client.InspectDisk(ctx, names.DataDisk)
+	disk, diskExists, err := client.InspectDisk(cleanupCtx, names.DataDisk)
 	if err != nil {
 		return err
 	}
@@ -558,17 +559,17 @@ func (o *defaultOperations) CleanupCreate(ctx context.Context, def Definition) e
 	// disk but the host crashed before recording its directory, exact name,
 	// definition, size, format, platform, and journal intent are still enough
 	// to remove only that invocation's partial resource.
-	if err := o.verifyOwnedResources(ctx, def, metadata, instance, vmExists, disk, diskExists, true); err != nil {
+	if err := o.verifyOwnedResources(cleanupCtx, def, metadata, instance, vmExists, disk, diskExists, true); err != nil {
 		return fmt.Errorf("refusing incomplete-create cleanup without exact host ownership proof: %w", err)
 	}
 	if createdVM {
-		_ = client.Stop(ctx, names.VM, true)
-		_ = client.Delete(ctx, names.VM)
+		_ = client.Stop(cleanupCtx, names.VM, true)
+		_ = client.Delete(cleanupCtx, names.VM)
 	}
 	if createdDisk {
-		_ = client.DeleteDisk(ctx, names.DataDisk)
+		_ = client.DeleteDisk(cleanupCtx, names.DataDisk)
 	}
-	if err := verifySelectedResourcesAbsent(ctx, client, names, createdVM, createdDisk); err != nil {
+	if err := verifySelectedResourcesAbsent(cleanupCtx, client, names, createdVM, createdDisk); err != nil {
 		return err
 	}
 	return cleanupCreateState(store, def)
@@ -918,7 +919,7 @@ func (o *defaultOperations) operationComponents(ctx context.Context, def Definit
 	return map[string]any{target: componentResult}
 }
 
-func (o *defaultOperations) completeHostUpdateRecovery(ctx context.Context, def Definition, journal box.Journal) error {
+func (o *defaultOperations) completeHostUpdateRecovery(_ context.Context, def Definition, journal box.Journal) error {
 	if journal.Update == nil || !component.Known(component.Name(journal.Update.Component)) {
 		return errors.New("update journal is missing a known component recovery state")
 	}
@@ -928,14 +929,13 @@ func (o *defaultOperations) completeHostUpdateRecovery(ctx context.Context, def 
 	}
 	recoveryCtx, cancel := context.WithTimeout(context.Background(), hostCleanupTimeout)
 	defer cancel()
-	ctx = recoveryCtx
-	if err := o.StopServices(ctx, def); err != nil {
+	if err := o.StopServices(recoveryCtx, def); err != nil {
 		return err
 	}
-	if _, err := o.restoreAndConfirmTransactionSnapshot(ctx, def, target, journal.Update.Snapshot); err != nil {
+	if _, err := o.restoreAndConfirmTransactionSnapshot(recoveryCtx, def, target, journal.Update.Snapshot); err != nil {
 		return err
 	}
-	if err := o.StartServices(ctx, def); err != nil {
+	if err := o.StartServices(recoveryCtx, def); err != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), hostCleanupTimeout)
 		defer stopCancel()
 		_ = o.StopServices(stopCtx, def)
@@ -1004,7 +1004,7 @@ func (o *defaultOperations) Rollback(ctx context.Context, def Definition, target
 	}, nil
 }
 
-func (o *defaultOperations) completeHostRollback(ctx context.Context, def Definition, journal box.Journal) (any, error) {
+func (o *defaultOperations) completeHostRollback(_ context.Context, def Definition, journal box.Journal) (any, error) {
 	if journal.Rollback == nil {
 		return nil, errors.New("rollback journal is missing recovery state")
 	}
@@ -1026,11 +1026,10 @@ func (o *defaultOperations) completeHostRollback(ctx context.Context, def Defini
 	}
 	recoveryCtx, cancel := context.WithTimeout(context.Background(), hostCleanupTimeout)
 	defer cancel()
-	ctx = recoveryCtx
-	if err := o.StopServices(ctx, def); err != nil {
+	if err := o.StopServices(recoveryCtx, def); err != nil {
 		return nil, err
 	}
-	result, err := o.restoreAndConfirmTransactionSnapshot(ctx, def, target, journal.Rollback.PreviousSnapshot)
+	result, err := o.restoreAndConfirmTransactionSnapshot(recoveryCtx, def, target, journal.Rollback.PreviousSnapshot)
 	if err != nil {
 		return nil, err
 	}
@@ -1038,7 +1037,7 @@ func (o *defaultOperations) completeHostRollback(ctx context.Context, def Defini
 	if err := writeTransactionSnapshot(latestPath, current); err != nil {
 		return nil, err
 	}
-	if err := o.StartServices(ctx, def); err != nil {
+	if err := o.StartServices(recoveryCtx, def); err != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), hostCleanupTimeout)
 		defer stopCancel()
 		_ = o.StopServices(stopCtx, def)
@@ -2074,13 +2073,10 @@ func (o *defaultOperations) removeFailedRebuildCandidate(ctx context.Context, de
 
 func (o *defaultOperations) Version(ctx context.Context, def Definition) (VersionResult, error) {
 	result := VersionResult{CLI: "v2-dev", Lima: "unavailable", ConfigSchema: config.ConfigSchema, LockSchema: config.LockSchema}
-	client, err := o.client(def)
-	if err != nil {
-		return result, nil
-	}
-	version, err := client.DetectVersion(ctx)
-	if err == nil {
-		result.Lima = version
+	if client, clientErr := o.client(def); clientErr == nil {
+		if version, detectErr := client.DetectVersion(ctx); detectErr == nil {
+			result.Lima = version
+		}
 	}
 	return result, nil
 }

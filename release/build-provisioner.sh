@@ -21,7 +21,9 @@ source /etc/os-release
 output_dir=${1:-"${TMPDIR:-/tmp}/hermes-box-release"}
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-mkdir -p "$output_dir" "$work/root/debs" "$work/apt/partial"
+apt_cache=${HERMES_BOX_APT_CACHE:-"$work/apt"}
+mkdir -p "$output_dir" "$work/root/debs" "$apt_cache/partial"
+chmod 0755 "$apt_cache" "$apt_cache/partial"
 
 mapfile -t packages < <(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$release_root/provisioner-packages.in")
 ((${#packages[@]} > 0)) || { printf 'provisioner package list is empty\n' >&2; exit 1; }
@@ -30,8 +32,8 @@ mapfile -t packages < <(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$rele
 : >"$work/dpkg-status"
 apt-get --assume-yes --download-only --no-install-recommends \
   -o "Dir::State::status=$work/dpkg-status" \
-  -o "Dir::Cache::archives=$work/apt" install "${packages[@]}"
-find "$work/apt" -maxdepth 1 -type f -name '*.deb' -exec cp {} "$work/root/debs/" \;
+  -o "Dir::Cache::archives=$apt_cache" install "${packages[@]}"
+find "$apt_cache" -maxdepth 1 -type f -name '*.deb' -exec cp {} "$work/root/debs/" \;
 find "$work/root/debs" -type f -name '*.deb' -print -quit | grep -q . || {
   printf 'apt produced no provisioner packages\n' >&2
   exit 1

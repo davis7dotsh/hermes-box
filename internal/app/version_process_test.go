@@ -75,6 +75,9 @@ func TestVersionHelperProcess(t *testing.T) {
 			break
 		}
 	}
-	cli := NewDefault(io.Reader(os.Stdin), os.Stdout, os.Stderr, os.Environ())
+	cli, err := NewDefault(io.Reader(os.Stdin), os.Stdout, os.Stderr, os.Environ())
+	if err != nil {
+		t.Fatal(err)
+	}
 	os.Exit(cli.Run(context.Background(), os.Args[separator:]))
 }

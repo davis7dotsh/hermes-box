@@ -418,16 +418,22 @@ environment and interpreter:
 ```
 
 Installation uses the pinned uv version, embedded CPython build, candidate's
-reviewed lock file, and complete platform-matched wheel bundle. The normal path
-is equivalent to:
+reviewed lock file, and complete platform-matched wheel bundle. The release
+builder exports the reviewed universal lock, filters it without dependency
+resolution to a hash-locked Linux ARM64 requirements file, and builds one exact
+Hermes project wheel with the pinned build tools. The guest installation is
+equivalent to:
 
 ```text
-uv sync --extra all --locked --offline --no-managed-python
+uv pip install --offline --no-index --require-hashes -r requirements-linux-arm64.txt
+uv pip install --offline --no-index --no-deps hermes_agent-<version>-py3-none-any.whl
 ```
 
-The wheel bundle contains every transitive dependency selected by the reviewed
-lock and its own hash manifest. Installation points uv at the embedded
-interpreter explicitly and must pass with outbound networking disabled.
+The wheel bundle contains every transitive dependency selected for CPython 3.13
+on Linux ARM64, the exact project wheel, and a manifest binding both filenames
+and SHA-256 identities. Installation points uv at the embedded interpreter
+explicitly, performs no lock resolution, and must pass with outbound networking
+disabled.
 
 `HERMES_HOME=/home/agent/.hermes` remains persistent and is never placed inside
 the checkout.
@@ -1006,8 +1012,8 @@ and lock schema. It does not start a VM.
 ### 8.2 Locking
 
 Only one mutating operation may run per logical box. Mutating commands acquire
-`~/.hermes-box/locks/<name>.lock` before preflight and hold it through final
-verification.
+`<resolved HERMES_BOX_HOME>/locks/<name>.lock` before preflight and hold it
+through final verification.
 
 Read-only commands may run concurrently. `logs -f` does not hold the mutation
 lock.

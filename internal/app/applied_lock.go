@@ -185,7 +185,9 @@ func syncHostAppliedLock(def Definition, encoded string) error {
 		return errors.New("guest status omitted applied lock")
 	}
 	var lock config.Lock
-	if err := yaml.Unmarshal([]byte(encoded), &lock); err != nil {
+	decoder := yaml.NewDecoder(strings.NewReader(encoded))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(&lock); err != nil {
 		return fmt.Errorf("decode guest applied lock: %w", err)
 	}
 	return writeLock(hostAppliedLockPath(def), lock)

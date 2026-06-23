@@ -23,7 +23,7 @@ The reviewed update chain is:
 ```text
 official immutable input
   -> release/pins.env
-  -> qualification.lock.template
+  -> release/qualification.lock.template
   -> reproducible repository-owned artifacts
   -> published immutable URLs and attestations
   -> generated candidate lock
@@ -241,7 +241,9 @@ and static Linux ARM64 guest helper, so rerun deterministic provisioner builds,
 protocol tests, and the isolated lifecycle.
 
 Pin GitHub Actions to reviewed full commit SHAs with readable release comments.
-Keep checkout `persist-credentials: false`. Qualification jobs build twice on
+Keep checkout `persist-credentials: false` in lower-trust qualification jobs.
+The publication job may persist its scoped token only when authenticated fetch
+is required for reviewed-main ancestry proof. Qualification jobs build twice on
 native Linux ARM64; publication jobs alone receive `contents: write`,
 `id-token: write`, and attestation permissions.
 

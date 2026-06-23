@@ -26,9 +26,12 @@ qualification still boots the dated Canonical cloud image `20260612`.
 The release-only Python environment is equally closed: the standalone Python,
 uv, PyYAML, pip, and setuptools wheels have exact URLs and SHA-256 pins.
 `python-build-requirements.txt` installs those wheels offline with
-`--require-hashes`. Hermes' exported runtime requirements retain their lock
-hashes, and the setuptools build-backend wheel is copied from that same
-verified tool set into the offline wheel closure.
+`--require-hashes`. Hermes' universal lock export is filtered without dependency
+resolution into hash-locked CPython 3.13 Linux ARM64 requirements. The pinned
+setuptools backend builds one exact Hermes project wheel, and the artifact
+manifest binds that wheel and the platform requirements by filename and
+SHA-256. A fresh venv proves both installation steps with `uv pip install`,
+`--require-hashes`, `--no-deps`, and no index or network access.
 
 ```bash
 artifact_dir=${RUNNER_TEMP:-/tmp}/hermes-box-release

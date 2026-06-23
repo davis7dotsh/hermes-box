@@ -177,6 +177,7 @@ type fakeOperations struct {
 	rollbackResult map[string]any
 	errAt          map[string]error
 	recoveryCtxErr error
+	logsOutput     *string
 }
 
 func (f *fakeOperations) call(name string) error {
@@ -244,7 +245,11 @@ func (f *fakeOperations) Exec(_ context.Context, _ Definition, args []string, _ 
 	return f.commandStatus, f.call("exec:" + strings.Join(args, ","))
 }
 func (f *fakeOperations) Logs(_ context.Context, _ Definition, target string, lines int, follow bool, stdout, _ io.Writer) error {
-	_, _ = io.WriteString(stdout, "one\ntwo\n")
+	output := "one\ntwo\n"
+	if f.logsOutput != nil {
+		output = *f.logsOutput
+	}
+	_, _ = io.WriteString(stdout, output)
 	return f.call("logs:" + target + ":" + boolString(follow))
 }
 func (f *fakeOperations) OpenExecutor(context.Context, Definition) (string, error) {
@@ -494,6 +499,26 @@ func TestJSONSuccessIsOneStableEnvelope(t *testing.T) {
 	}
 	if strings.Count(strings.TrimSpace(output), "\n") != 0 {
 		t.Fatalf("expected one JSON line: %q", output)
+	}
+}
+
+func TestJSONLogsUseEmptyArrayWhenThereIsNoOutput(t *testing.T) {
+	cli, _, operations, _, _, stdout, _ := newTestCLI()
+	empty := ""
+	operations.logsOutput = &empty
+	if status := cli.Run(context.Background(), []string{"--json", "logs", "recovery"}); status != 0 {
+		t.Fatalf("status = %d", status)
+	}
+	var envelope struct {
+		Result struct {
+			Lines []string `json:"lines"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Result.Lines == nil || len(envelope.Result.Lines) != 0 {
+		t.Fatalf("empty logs = %#v, want non-nil empty array", envelope.Result.Lines)
 	}
 }
 
@@ -1193,8 +1218,12 @@ func TestGuestResponseDecoderRejectsUnknownSchemaAndOversize(t *testing.T) {
 		}
 	}
 	buffer := &boundedProtocolBuffer{}
-	if _, err := buffer.Write(make([]byte, maximumGuestResponseBytes+1)); err == nil || !buffer.exceeded {
+	written, err := buffer.Write(make([]byte, maximumGuestResponseBytes+1))
+	if err == nil || !buffer.exceeded {
 		t.Fatal("oversized guest response was not rejected")
+	}
+	if written != maximumGuestResponseBytes || buffer.buffer.Len() != maximumGuestResponseBytes {
+		t.Fatalf("partial write = %d bytes, buffer = %d, want %d", written, buffer.buffer.Len(), maximumGuestResponseBytes)
 	}
 }
 
@@ -1588,5 +1617,46 @@ func TestDoctorRepairCommandsPreserveSelectedHomeAndConfig(t *testing.T) {
 	want := `HERMES_BOX_HOME='/tmp/box home' hermes-box --config '/tmp/davis'"'"'s box/hermes-box.yaml'`
 	if got != want {
 		t.Fatalf("operator command = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultLockerUsesResolvedHermesBoxHome(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "custom-state")
+	release, err := (defaultLocker{}).Acquire(context.Background(), Definition{Name: "main", Home: home}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(home, "locks", "main.lock")); err != nil {
+		t.Fatalf("resolved-home lock was not created: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".hermes-box", "locks", "main.lock")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("locker created an unexpected nested default-home path: %v", err)
+	}
+}
+
+func TestGuestAppliedLockRejectsUnknownFields(t *testing.T) {
+	def := Definition{Name: "main", Home: t.TempDir()}
+	encoded, err := encodeLock(validClosureLock())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := syncHostAppliedLock(def, encoded+"unexpected_field: true\n"); err == nil || !strings.Contains(err.Error(), "field unexpected_field not found") {
+		t.Fatalf("strict guest applied-lock error = %v", err)
+	}
+	if _, err := os.Stat(hostAppliedLockPath(def)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("invalid guest lock was published: %v", err)
+	}
+}
+
+func TestHelpCommandDocumentsItself(t *testing.T) {
+	cli, _, _, _, _, stdout, _ := newTestCLI()
+	if status := cli.Run(context.Background(), []string{"help", "help"}); status != 0 {
+		t.Fatalf("status = %d", status)
+	}
+	if got := stdout.String(); got != "Usage: hermes-box help [COMMAND]\n" {
+		t.Fatalf("help help output = %q", got)
 	}
 }

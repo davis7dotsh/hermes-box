@@ -38,6 +38,11 @@ HERMES_GATED_APPROVAL_PATCHER="$release_root/hermes/patch-hermes-gated-approval.
 HERMES_GATED_APPROVAL_MODULE="$release_root/hermes/gated_approval.py" \
 HERMES_GATED_APPROVAL_PATCHER="$release_root/hermes/patch-hermes-gated-approval.py" \
   "$work/builder/bin/python" "$release_root/hermes/test_gated_approval.py"
+mkdir -p "$work/source/hermes_box_release"
+install -m 0644 "$release_root/hermes/test_gated_approval.py" \
+  "$work/source/hermes_box_release/test_gated_approval.py"
+install -m 0644 "$release_root/hermes/patch-hermes-gated-approval.py" \
+  "$work/source/hermes_box_release/patch-hermes-gated-approval.py"
 
 remove_python_bytecode "$work/source"
 assert_no_python_bytecode "$work/source"

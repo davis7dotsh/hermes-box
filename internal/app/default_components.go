@@ -50,7 +50,7 @@ func materializeLockClosure(ctx context.Context, def Definition) error {
 	}
 	_, indexDigest, ok := strings.Cut(lock.Executor.Image, "@")
 	if !ok {
-		return errors.New("Executor image has no immutable index digest")
+		return errors.New("executor image has no immutable index digest")
 	}
 	store := artifacts.Store{Root: filepath.Join(def.Home, "artifacts")}
 	_, err := store.MaterializeOCI(ctx, lock.Executor.Image, indexDigest, lock.Executor.LinuxARM64Digest)

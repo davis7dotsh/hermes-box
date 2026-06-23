@@ -2,9 +2,12 @@ package app
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/davis7dotsh/hermes-box/internal/box"
 	"github.com/davis7dotsh/hermes-box/internal/config"
@@ -12,14 +15,29 @@ import (
 	"github.com/davis7dotsh/hermes-box/internal/process"
 )
 
-func NewDefault(stdin io.Reader, stdout, stderr io.Writer, environ []string) *CLI {
+func NewDefault(stdin io.Reader, stdout, stderr io.Writer, environ []string) (*CLI, error) {
+	return newDefault(stdin, stdout, stderr, environ, func(service string) (keychain.Store, error) {
+		return keychain.New(service)
+	})
+}
+
+func newDefault(stdin io.Reader, stdout, stderr io.Writer, environ []string, newKeychain func(string) (keychain.Store, error)) (*CLI, error) {
 	runner := process.OSRunner{}
-	keys, _ := keychain.New("com.highmatter.hermes-box.backup")
+	keys, err := newKeychain("com.highmatter.hermes-box.backup")
+	if err != nil {
+		// Linux contributor checks still exercise help, completion, and version.
+		// Operational commands fail host preflight before the unavailable store is
+		// used; a Darwin initialization failure is never allowed to degrade.
+		if runtime.GOOS == "darwin" || !errors.Is(err, keychain.ErrUnavailable) {
+			return nil, fmt.Errorf("initialize backup keychain: %w", err)
+		}
+		keys = nil
+	}
 	operations := &defaultOperations{runner: runner, stdout: stdout, stderr: stderr, keys: keys}
 	return New(Dependencies{
 		Loader: &defaultLoader{}, Operations: operations,
 		Backups: &defaultBackups{operations: operations}, Locker: defaultLocker{},
-	}, stdin, stdout, stderr, environ)
+	}, stdin, stdout, stderr, environ), nil
 }
 
 type defaultLoader struct{}

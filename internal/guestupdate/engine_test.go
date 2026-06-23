@@ -358,6 +358,87 @@ func TestNodeUsesTrustedGuestArchiveInstaller(t *testing.T) {
 	}
 }
 
+func TestHermesWheelManifestBindsPlatformRequirementsAndProjectWheel(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	commit := strings.Repeat("a", 40)
+	lockHash := strings.Repeat("b", 64)
+	requirementsName := "requirements-linux-arm64.txt"
+	projectName := "hermes_agent-0.17.0-py3-none-any.whl"
+	dependencyName := "dependency-1.0-py3-none-any.whl"
+	for name, payload := range map[string]string{
+		requirementsName: "dependency==1.0 --hash=sha256:" + strings.Repeat("c", 64) + "\n",
+		projectName:      "project-wheel",
+		dependencyName:   "dependency-wheel",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	requirementsHash, err := fileSHA256(filepath.Join(root, requirementsName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	projectHash, err := fileSHA256(filepath.Join(root, projectName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	dependencyHash, err := fileSHA256(filepath.Join(root, dependencyName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	manifest := fmt.Sprintf(
+		"schema=2\nplatform=linux-arm64\npython=3.13.14\nuv=0.11.23\nhermes_commit=%s\nuv_lock_sha256=%s\nrequirements=%s\tsha256=%s\nproject_wheel=%s\tsha256=%s\nwheel=%s\tsha256=%s\nwheel=%s\tsha256=%s\n",
+		commit, lockHash, requirementsName, requirementsHash, projectName, projectHash,
+		dependencyName, dependencyHash, projectName, projectHash,
+	)
+	if err := os.WriteFile(filepath.Join(root, "manifest.txt"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	parsed, err := readHermesWheelManifest(root, commit, lockHash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Requirements != filepath.Join(root, requirementsName) || parsed.ProjectWheel != filepath.Join(root, projectName) {
+		t.Fatalf("parsed manifest = %#v", parsed)
+	}
+	if err := os.WriteFile(filepath.Join(root, projectName), []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readHermesWheelManifest(root, commit, lockHash); err == nil || !strings.Contains(err.Error(), "sha256") {
+		t.Fatalf("tampered project wheel error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, projectName), []byte("project-wheel"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "unexpected.whl"), []byte("unexpected"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readHermesWheelManifest(root, commit, lockHash); err == nil || !strings.Contains(err.Error(), "unlisted wheel") {
+		t.Fatalf("unlisted wheel error = %v", err)
+	}
+}
+
+func TestHermesWheelManifestRejectsUnsafeRequirementsIdentity(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "extra.whl"), []byte("unlisted"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manifest := "schema=2\nplatform=linux-arm64\npython=3.13\nuv=0.11\n" +
+		"hermes_commit=" + strings.Repeat("a", 40) + "\n" +
+		"uv_lock_sha256=" + strings.Repeat("b", 64) + "\n" +
+		"requirements=../requirements.txt\tsha256=" + strings.Repeat("c", 64) + "\n" +
+		"project_wheel=hermes_agent-0.17.0-py3-none-any.whl\tsha256=" + strings.Repeat("d", 64) + "\n" +
+		"wheel=hermes_agent-0.17.0-py3-none-any.whl\tsha256=" + strings.Repeat("d", 64) + "\n"
+	if err := os.WriteFile(filepath.Join(root, "manifest.txt"), []byte(manifest), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readHermesWheelManifest(root, strings.Repeat("a", 40), strings.Repeat("b", 64)); err == nil || !strings.Contains(err.Error(), "requirements identity") {
+		t.Fatalf("unsafe requirements identity error = %v", err)
+	}
+}
+
 func TestFailedHealthRestoresPreviousActivation(t *testing.T) {
 	t.Parallel()
 	engine, runner := newTestEngine(t)

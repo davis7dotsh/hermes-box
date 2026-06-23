@@ -196,6 +196,16 @@ func TestTransactionRestoreNeverCreatesMissingIdentity(t *testing.T) {
 	}
 }
 
+func TestTransactionRestoreRejectsArchiveDifferentFromRecordedSnapshot(t *testing.T) {
+	record := transactionSnapshot{Backup: BackupResult{ArchiveSHA256: "recorded"}}
+	if err := verifyTransactionSnapshotArchive(record, backup.Envelope{ArchiveSHA256: "replacement"}); err == nil || !strings.Contains(err.Error(), "checksum changed") {
+		t.Fatalf("checksum binding error = %v", err)
+	}
+	if err := verifyTransactionSnapshotArchive(record, backup.Envelope{ArchiveSHA256: "recorded"}); err != nil {
+		t.Fatalf("matching recorded checksum rejected: %v", err)
+	}
+}
+
 func TestRebuildRecoveryNeverCreatesMissingIdentity(t *testing.T) {
 	keys := keychain.NewMemoryStore()
 	def := Definition{Name: "main", ConfigDir: t.TempDir(), Home: t.TempDir()}

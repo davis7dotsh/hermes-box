@@ -88,6 +88,7 @@ var commandHelp = map[string]string{
 	"destroy":    "Usage: hermes-box destroy [--force]\n",
 	"completion": "Usage: hermes-box completion [bash|zsh|fish]\n",
 	"version":    "Usage: hermes-box version\n",
+	"help":       "Usage: hermes-box help [COMMAND]\n",
 }
 
 var completions = map[string]string{
