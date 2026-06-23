@@ -1,4 +1,4 @@
-.PHONY: check format test
+.PHONY: check format test static
 
 format:
 	gofmt -w ./cmd ./internal
@@ -6,8 +6,11 @@ format:
 test:
 	go test -race ./...
 
+static:
+	./tests/static.sh
+
 check:
 	test -z "$$(gofmt -l ./cmd ./internal)"
 	go vet ./...
 	go test -race ./...
-	./tests/static.sh
+	$(MAKE) static

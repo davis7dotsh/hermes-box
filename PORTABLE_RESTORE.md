@@ -1,111 +1,52 @@
-# Portable Restore
+# Restore a Hermes Box v2 backup
 
-This archive contains a complete Hermes Box snapshot, its smolvm base image,
-and the host wrapper. It intentionally excludes the dedicated SSH key needed
-to access the restored box. It contains Hermes credentials and may contain API
-keys.
+Hermes Box v2 recovery bundles are self-contained, age-encrypted archives of
+durable guest state and the verified install inputs needed to reconstruct the
+applied root. They are not v1 portable packages and do not contain a smolvm
+image, root filesystem, Lima binary, or reusable SSH key.
 
-The packaged `AGENTS.md` provides the short expand, restore, and run sequence.
-For current documentation and troubleshooting, see the
-[Hermes Box repository](https://github.com/davis7dotsh/hermes-box).
+You need:
 
-For Executor-enabled boxes, the package preserves the enabled state, host
-loopback port, exact digest-pinned image, and `/workspace/executor/data`.
-That workspace data can contain integrations, policies, OAuth tokens, API
-credentials, and Executor's generated secret store.
-
-Create it from a configured Hermes Box:
-
-```bash
-./bin/hermes-box package configured-agent
-```
-
-The command writes the `.tar` archive and its `.sha256` checksum under
-`backups/`. Copy both files together to encrypted, off-host storage before
-moving them to the destination host.
-
-Requirements:
-
-- A macOS ARM64 host
-- smolvm 1.0.4
-- Go 1.24 or newer
-- `shasum`, `ssh`, `ssh-keygen`, and `lsof`
-- Enough free space for a 15 GiB VM
-- Outbound network access to repull the pinned Executor runtime when enabled
-
-If Go is missing or older than 1.24, install a supported macOS ARM64 release
-from <https://go.dev/dl/>. If smolvm is missing or not exactly 1.0.4, install
-the official Darwin ARM64 asset from the
-[v1.0.4 release](https://github.com/smol-machines/smolvm/releases/tag/v1.0.4).
-Rerun the requirement probes, then resume at the checksum command below; do not
-create or replace a VM until they pass.
+- an Apple Silicon Mac with Go 1.24 or newer;
+- Lima 2.1.3, or the exact qualified version required by the applied lock;
+- an absent destination box with a reviewed `hermes-box.yaml`; and
+- the exported age identity matching the backup envelope.
 
 Restore:
 
 ```bash
-shasum -a 256 -c hermes-box-portable-*.tar.sha256
-tar -xpf hermes-box-portable-*.tar
-cd hermes-box
-chmod 600 /secure/path/hermes-box-ed25519 images/hermes-base.smolmachine
-printf '\nHERMES_BOX_SSH_KEY=%s\n' /secure/path/hermes-box-ed25519 >>hermes-box.conf
-./bin/hermes-box restore backups/*.hermesbox
-./bin/hermes-box status
-./bin/hermes-box ssh
+./bin/hermes-box \
+  --config /path/to/destination/hermes-box.yaml \
+  restore /path/to/backup.tar.zst.age \
+  --identity /secure/path/source-age-key.txt
 ```
 
-The restore injects the current `tm` launcher, tmux configuration, interactive
-SSH profile, and SSH hardening into older snapshots. Interactive SSH therefore
-reattaches the exact `main` session after restore. If an older root does not
-contain `xterm-ghostty` terminfo, only that terminal name falls back to
-`xterm-256color`; current Ubuntu 26 images preserve Ghostty's native entry.
-This targeted reinjection does not upgrade the archived operating system: an
-Ubuntu 24.04 snapshot restores as Ubuntu 24.04. Build a separate new box with
-`init` for an Ubuntu 26.04 migration.
+Restore refuses an existing VM or data disk. It verifies and decrypts the
+archive, validates safe paths, creates a fresh persistent disk and Ubuntu root,
+restores `/data`, applies the archived root lock, and checks health.
+Archive, envelope, identity, manifest, path, and artifact-closure verification
+all finish before restore creates the destination VM or data disk.
 
-If Executor is enabled in `hermes-box.conf`, also run:
+Only locks that completed candidate qualification, immutable publication,
+exact-URL re-download, and the isolated lifecycle are promoted for normal use.
+Restore does not turn an unqualified candidate lock into a trusted release.
+
+To move to a separately reviewed desired state during recovery, provide
+`--lock PATH`. Hermes Box materializes and verifies every additional artifact
+before creating destination resources.
+
+After success, the destination creates its own Keychain-backed age identity.
+Export it before making the first destination backup:
 
 ```bash
-./bin/hermes-box executor status
-./bin/hermes-box ssh \
-  'sudo -iu hermes env HERMES_HOME=/workspace/hermes-home hermes mcp test executor'
+./bin/hermes-box --config /path/to/destination/hermes-box.yaml \
+  key export /secure/path/destination-age-key.txt
+./bin/hermes-box --config /path/to/destination/hermes-box.yaml \
+  backup restored
 ```
 
-Retrieve the same stable private key used to create the source box from an
-encrypted secret store such as 1Password. One key can restore every archive
-from that box. Hermes Box derives the public key automatically, checks the key
-fingerprint recorded by new snapshots, and preserves the supplied identity
-when applying the archived root filesystem.
-
-The packaged configuration uses repository-local `images/`, `backups/`, and
-`state/` directories and preserves the source box's machine names and ports.
-Change `HERMES_BOX_MACHINE_NAME`, `HERMES_BOX_BUILDER_NAME`,
-`HERMES_BOX_SSH_PORT`, or `HERMES_BOX_EXECUTOR_PORT` before restoring if any
-would collide on the destination host.
-
-If the target machine name does not exist, restore creates it directly and
-runs one complete validation pass. If that validation fails, Hermes Box
-deletes only the machine it just created. When replacing an existing machine,
-restore retains the safer two-phase flow: safety snapshot, temporary candidate
-validation, replacement, and rollback on failure.
-
-Hermes authentication, configuration, sessions, memories, skills, and work are
-restored from the snapshot. No Hermes setup is required afterward. If the
-archive contains an optional `secret-env.txt`, its referenced host environment
-variables must be defined on the destination host before restore.
-
-The source host's SSH key, macOS Keychain entries, and browser sessions are not
-included, and the repullable Executor runtime under
-`/workspace/.hermes-box-runtime` is intentionally omitted.
-If host-side Executor inventory and MCP test commands are needed on the new
-Mac, create a destination-local API key in the restored portal and run:
-
-```bash
-./bin/hermes-box executor auth set
-./bin/hermes-box executor mcp-test
-```
-
-Keep the archive encrypted at rest. It contains the restored Hermes state;
-the archive plus the separately stored private key grants SSH access to it.
-
-The Go host CLI remains compatible with `hermes-box-v2` snapshot directories
-created by the earlier Bash wrapper.
+The source identity is used only for decryption and is never silently imported.
+Human authentication state on `/data` is restored; host browser sessions and
+Keychain entries are not. A qualified cross-destination lifecycle uses a unique
+temporary configuration and verifies this behavior before a root lock is
+promoted.

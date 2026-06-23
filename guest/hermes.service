@@ -1,0 +1,20 @@
+[Unit]
+Description=Hermes Agent gateway
+After=network-online.target executor.service hermes-box-recover.service
+Wants=network-online.target executor.service
+Requires=hermes-box-recover.service
+
+[Service]
+Type=simple
+User=agent
+Group=agent
+Environment=HOME=/home/agent
+Environment=HERMES_HOME=/home/agent/.hermes
+Environment=PATH=/opt/hermes-box/tooling/current/node/bin:/opt/hermes-box/tooling/current/uv/bin:/opt/hermes-box/current/claude/bin:/opt/hermes-box/current/codex/bin:/opt/hermes-box/current/hermes/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+WorkingDirectory=/home/agent/workspace
+ExecStart=/opt/hermes-box/current/hermes/bin/hermes gateway run
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 session=main
-workdir=/workspace/work
+workdir=/home/agent/workspace
 
 if [[ -z ${TMUX:-} && ( ! -t 0 || ! -t 1 ) ]]; then
   printf 'tm: an interactive terminal is required outside tmux\n' >&2
@@ -14,9 +14,8 @@ if [[ ! -d $workdir ]]; then
   exit 1
 fi
 
-# Older restored roots may not contain Ghostty's terminfo entry. Preserve the
-# real terminal on current Ubuntu images, and degrade only when tmux could not
-# otherwise understand it.
+# Preserve Ghostty's terminal identity when its terminfo is installed, and
+# degrade only when tmux could not otherwise understand it.
 if [[ ${TERM:-} == xterm-ghostty ]] &&
   ! infocmp -x xterm-ghostty >/dev/null 2>&1; then
   export TERM=xterm-256color

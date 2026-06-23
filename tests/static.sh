@@ -1,237 +1,214 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016 # grep patterns intentionally contain shell literals.
+# shellcheck disable=SC2016 # grep patterns intentionally contain workflow literals.
 set -euo pipefail
 
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$root"
 
-bash -n bin/hermes-box
-bash -n guest/bootstrap.sh
-bash -n guest/install-node.sh
-bash -n guest/start.sh
-bash -n guest/entrypoint.sh
-bash -n guest/executor.sh
-python3 -c 'compile(open("guest/extract-executor.py", encoding="utf-8").read(), "guest/extract-executor.py", "exec")'
-python3 -c 'compile(open("guest/hermes_gated_approval.py", encoding="utf-8").read(), "guest/hermes_gated_approval.py", "exec")'
-python3 -c 'compile(open("guest/patch-hermes-gated-approval.py", encoding="utf-8").read(), "guest/patch-hermes-gated-approval.py", "exec")'
-python3 -c 'compile(open("tests/hermes-gated-approval.py", encoding="utf-8").read(), "tests/hermes-gated-approval.py", "exec")'
-bash -n guest/snapshot.sh
-bash -n guest/restore.sh
-bash -n guest/workspace-seed.sh
-bash -n guest/boxadmin.bash_profile
-bash -n guest/tm
-bash -n tests/lifecycle.sh
-bash -n tests/executor-extract.sh
-bash -n tests/executor-runtime.sh
-bash -n tests/workspace-seed.sh
-bash -n tests/tmux.sh
-visudo -cf guest/hermes-box.sudoers
+shell_files=(bin/hermes-box guest/bootstrap.sh guest/hermes-box-recover guest/tm)
+while IFS= read -r path; do
+  shell_files+=("$path")
+done < <(find release -maxdepth 1 -type f -name '*.sh' -print 2>/dev/null | sort)
+while IFS= read -r path; do
+  shell_files+=("$path")
+done < <(find tests -maxdepth 1 -type f -name '*.sh' ! -name static.sh -print | sort)
 
-if command -v shellcheck >/dev/null 2>&1; then
-  shellcheck \
-    bin/hermes-box \
-    guest/bootstrap.sh \
-    guest/install-node.sh \
-    guest/start.sh \
-    guest/entrypoint.sh \
-    guest/executor.sh \
-    guest/snapshot.sh \
-    guest/restore.sh \
-    guest/workspace-seed.sh \
-    guest/boxadmin.bash_profile \
-    guest/tm \
-    tests/lifecycle.sh \
-    tests/executor-extract.sh \
-    tests/executor-runtime.sh \
-    tests/workspace-seed.sh \
-    tests/tmux.sh
-else
-  printf 'shellcheck not installed; skipping local shell lint\n' >&2
-fi
-
-grep -Fq "PermitRootLogin no" guest/bootstrap.sh
-grep -Fq "AllowAgentForwarding no" guest/bootstrap.sh
-grep -Fq "AllowTcpForwarding no" guest/bootstrap.sh
-grep -Fq "DisableForwarding yes" guest/bootstrap.sh
-grep -Fq "AcceptEnv COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION" guest/bootstrap.sh
-grep -Fq "rm -f /etc/ssh/ssh_host_*" guest/bootstrap.sh
-grep -Fq "runtime-ownership-v2" guest/start.sh
-grep -Fq 'packed_root_uid=$(stat -c %u /usr/bin/sudo)' guest/start.sh
-grep -Fq '/usr/bin/sudo.ws' guest/start.sh
-grep -Fq '/usr/bin/cvtsudoers.ws' guest/start.sh
-grep -Fq '/usr/sbin/sudo_sendlog.ws' guest/start.sh
-grep -Fq "runtime-ownership-v*" guest/bootstrap.sh
-grep -Fq "runtime-ownership-v*" guest/restore.sh
-grep -Fq "groupadd --system messagebus" guest/start.sh
-grep -Fq "workspace-restored.id" guest/workspace-seed.sh
-grep -Fq "strict mode is unavailable" internal/app/host.go
-grep -Fq "no-egress mode is unavailable" internal/app/host.go
-grep -Eq 'backupFormat[[:space:]]*=[[:space:]]*"hermes-box-v2"' internal/app/backup.go
-grep -Fq "hermes-gateway.log" internal/app/lifecycle.go
-grep -Fq '"--net-backend", "virtio-net"' internal/app/lifecycle.go
-grep -Fq 'image = "ubuntu:26.04"' Smolfile
-grep -Fq 'const ubuntuImage = "ubuntu:26.04"' internal/app/app.go
-grep -Fq 'SMOLVM_PACK_CACHE_MAX_BYTES=17179869184' internal/app/host.go
-grep -Fq '"pack", ".smolvm-extracted"' internal/app/host.go
-grep -Fq "BatchMode=yes" internal/app/host.go
-grep -Fq 'user=hermes' guest/supervisord.conf
-grep -Fq 'HERMES_HOME="/workspace/hermes-home"' guest/supervisord.conf
-grep -Fq 'defaultNetworkMode   = "full"' internal/config/config.go
-grep -Fq 'HERMES_BOX_NETWORK_MODE=full' hermes-box.conf.example
-grep -Fq 'CODEX_HOME=/workspace/codex-home' guest/bootstrap.sh
-grep -Fq 'CODEX_INSTALL_DIR=$CODEX_HOME/bin' guest/bootstrap.sh
-grep -Fq 'hermes-box-install-node 24' guest/bootstrap.sh
-grep -Fq 'uv_version=0.11.23' guest/bootstrap.sh
-grep -Fq '1873a77350f6621279ae1a0d2227f2bd8b67131598f14a7eb0ba2215d3da2c98' guest/bootstrap.sh
-grep -Fq 'uv self version --short | grep -Fqx 0.11.23' tests/lifecycle.sh
-grep -Fq 'APT::Update::Error-Mode=any' guest/bootstrap.sh
-grep -Fq 'Acquire::http::Timeout "30"' guest/bootstrap.sh
-grep -Fq 'Acquire::https::Timeout "30"' guest/bootstrap.sh
-grep -Fq 'timeout --signal=TERM --kill-after=30s 3m' guest/bootstrap.sh
-grep -Fq 'apt index refresh failed after 6 bounded attempts' guest/bootstrap.sh
-grep -Fq 'apt package installation timed out after 20 minutes' guest/bootstrap.sh
-grep -Fq 'raw.githubusercontent.com/NousResearch/hermes-agent/$HERMES_INSTALL_COMMIT/scripts/install.sh' guest/bootstrap.sh
-grep -Fq 'dbd9d555ed4ac67bd1fc71ba6a39b410cf2af0ebcfd8f4889e086af78c9ddcaa' guest/bootstrap.sh
-grep -Fq 'timeout --signal=TERM --kill-after=30s 20m' guest/bootstrap.sh
-grep -Fq 'installer_stages=(repository venv python-deps path config complete)' guest/bootstrap.sh
-grep -Fq 'latest-v${node_major}.x' guest/install-node.sh
-grep -Fq '  tmux' guest/bootstrap.sh
-grep -Fq '  ncurses-term' guest/bootstrap.sh
-grep -Fq 'infocmp -x xterm-ghostty' guest/bootstrap.sh
-grep -Fq 'infocmp -x xterm-ghostty >/dev/null 2>&1 || true' guest/bootstrap.sh
-grep -Fq 'SendEnv=COLORTERM' internal/app/host.go
-grep -Fq 'SendEnv=TERM_PROGRAM' internal/app/host.go
-grep -Fq 'SendEnv=TERM_PROGRAM_VERSION' internal/app/host.go
-grep -Fq 'guest", "tm"), "/tmp/hermes-box-tm"' internal/app/lifecycle.go
-grep -Fq 'guest", "tmux.conf"), "/tmp/hermes-box-tmux.conf"' internal/app/lifecycle.go
-grep -Fq '/tmp/hermes-box-current-tm /usr/local/bin/tm' guest/restore.sh
-grep -Fq '/tmp/hermes-box-current-tmux.conf /etc/tmux.conf' guest/restore.sh
-grep -Fq 'guest/tm"' internal/app/portable.go
-grep -Fq 'guest/tmux.conf"' internal/app/portable.go
-grep -Fq -- '--extra messaging' guest/bootstrap.sh
-grep -Fq -- '--locked' guest/bootstrap.sh
-grep -Fq 'chown -hR hermes:hermes /usr/local/lib/hermes-agent/venv' guest/bootstrap.sh
-grep -Fq 'unable to repair Hermes virtualenv ownership' guest/start.sh
-grep -Fq 'hermes ALL=(ALL:ALL) NOPASSWD: ALL' guest/hermes-box.sudoers
-grep -Fq 'approval_policy = "never"' guest/bootstrap.sh
-grep -Fq 'sandbox_mode = "danger-full-access"' guest/bootstrap.sh
-grep -Fq 'trust_level = "trusted"' guest/bootstrap.sh
-grep -Fq 'codex_version=0.141.0' guest/start.sh
-grep -Fq 'b70030338592de3e361f3cde83d624f88061df300abe31b62075a5c5a058a6fc' guest/start.sh
-grep -Fq 'startup_log=/var/log/hermes-box-startup.log' guest/start.sh
-grep -Fq 'guest_hostname=$(hostname)' guest/bootstrap.sh
-grep -Fq 'HERMES_BOX_RESTORE_MODE' guest/entrypoint.sh
-grep -Fq -- '--connect-timeout 15 --max-time 600 --retry 5 --retry-all-errors' guest/start.sh
-grep -Fq "venv/bin/python -c 'import discord'" internal/app/host.go
-grep -Fq 'codex --strict-config --version' internal/app/host.go
-grep -Fq 'curl --connect-timeout 2 --max-time 5' internal/app/host.go
-grep -Fq 'curl --connect-timeout 1 --max-time 2' internal/app/host.go
-grep -Fq 'startupTimeout = 2 * time.Hour' internal/app/host.go
-grep -Fq '"machine", "list", "--json"' internal/app/host.go
-grep -Fq '/workspace/executor/executor.log' internal/app/host.go
-grep -Fq '/workspace/hermes-home/logs/supervisord.log' internal/app/host.go
-grep -Fq '/workspace/hermes-home/logs/sshd.log' internal/app/host.go
-grep -Fq 'supervisorctl", "restart", "hermes"' internal/app/host.go
-grep -Fq 'executorHermesRefreshMarker' internal/app/host.go
-grep -Fq '/proc/sys/kernel/random/boot_id' internal/app/host.go
-grep -Fq 'apt_packages+=(skopeo)' guest/bootstrap.sh
-grep -Fq 'HERMES_BOX_EXECUTOR_ENABLED=' internal/app/lifecycle.go
-grep -Fq 'skopeo copy' guest/executor.sh
-grep -Fq 'source_image=$(canonical_repository_digest "$image")' guest/executor.sh
-grep -Fq '.repository-digest' guest/executor.sh
-grep -Fq 'pull_stall_seconds=${HERMES_BOX_EXECUTOR_PULL_STALL_SECONDS:-600}' guest/executor.sh
-grep -Fq 'run_with_stall_deadline "$pull_stall_seconds"' guest/executor.sh
-grep -Fq 'du -sk "$progress_path"' guest/executor.sh
-grep -Fq 'prune_oci_transport_temps' guest/executor.sh
-grep -Fq '"oci:$oci_cache:executor"' guest/executor.sh
-grep -Fq 'timeout --signal=TERM --kill-after=30s 5m' guest/executor.sh
-grep -Fq 'timeout --signal=TERM --kill-after=5s 30s' guest/executor.sh
-grep -Fq '"$path/usr/local/bin/bun" build' guest/executor.sh
-grep -Fq -- '--target=bun' guest/executor.sh
-grep -Fq 'EXECUTOR_SECRET_KEY=hermes-box-validation-only-secret-key' guest/executor.sh
-grep -Fq 'flock -x -w 3300 9' guest/executor.sh
-grep -Fq 'HERMES_BOX_EXECUTOR_RUNTIME_ROOT:-/workspace/.hermes-box-runtime/executor' guest/executor.sh
-grep -Fq -- '--exclude=./.hermes-box-runtime' guest/snapshot.sh
-grep -Fq -- '--exclude=./codex-home/tmp' guest/snapshot.sh
-grep -Fq -- '--exclude=./codex-home/tmp' guest/restore.sh
-grep -Fq -- '--exclude=./var/lib/hermes-box/restore-ready' guest/snapshot.sh
-grep -Fq 'guest", "executor.sh"), "/tmp/hermes-box-executor.sh"' internal/app/lifecycle.go
-grep -Fq '/tmp/hermes-box-executor.sh' guest/bootstrap.sh
-grep -Fq '/usr/local/sbin/hermes-box-executor' guest/bootstrap.sh
-grep -Fq 'filter="data"' guest/extract-executor.py
-grep -Fq '.wh..wh..opq' guest/extract-executor.py
-grep -Fq 'EXECUTOR_ALLOW_LOCAL_NETWORK=false' guest/executor.sh
-grep -Fq 'EXECUTOR_HOST=0.0.0.0' guest/executor.sh
-grep -Fq 'BUN_FEATURE_FLAG_DISABLE_IPV6=1' guest/executor.sh
-grep -Fq 'find /workspace/executor ! -type l' guest/start.sh
-grep -Fq "grep -qx 'BUN_FEATURE_FLAG_DISABLE_IPV6=1'" internal/app/host.go
-grep -Fq 'ghcr.io/rhyssullivan/executor-selfhost:v1.5.16@sha256:' internal/config/config.go
-grep -Fq 'MCP_EXECUTOR_API_KEY' internal/app/executor.go
-grep -Fq 'tools.executor.coreTools.connections.list' internal/app/executor.go
-grep -Fq 'status [--json] [--sizes]' internal/app/executor.go
-grep -Fq 'context.WithTimeout(ctx, a.startupDeadline())' internal/app/executor.go
-grep -Fq '2bd1977d8fad185c9b4be47884f7e87f1add0ce3' internal/config/config.go
-grep -Fq 'upstream anchor drift' guest/patch-hermes-gated-approval.py
-grep -Fq 'Configuration is deliberately last' guest/patch-hermes-gated-approval.py
-grep -Fq 'HERMES_GATED_APPROVAL_PATCHER=/tmp/hermes-box-patch-hermes-gated-approval.py' guest/bootstrap.sh
-grep -Fq 'hermes auth add openai-codex --type oauth' internal/app/lifecycle.go
-grep -Fq 'verify_restored_state fresh-restore' tests/lifecycle.sh
-grep -Fq 'completed Codex setup and verified Executor blobs are retained' internal/app/lifecycle.go
-grep -Fq 'The preserved machine may contain injected secrets' internal/app/lifecycle.go
-if [[ $(grep -Fc 'deleteMachineForCleanup(a.config.BuilderName)' internal/app/lifecycle.go) -ne 2 ]]; then
-  printf 'builder cleanup must use bounded fresh contexts on success and defer\n' >&2
-  exit 1
-fi
-
-for download_script in guest/bootstrap.sh guest/install-node.sh; do
-  grep -Fq -- '--connect-timeout 15' "$download_script"
-  grep -Fq -- '--max-time 600' "$download_script"
-  grep -Fq -- '--retry-max-time 600' "$download_script"
-  grep -Fq -- '--retry-all-errors' "$download_script"
-  curl_count=$(grep -Ec '^[[:space:]]*curl ' "$download_script")
-  bounded_curl_count=$(grep -Fc 'curl "${download_curl_args[@]}"' "$download_script")
-  if [[ $curl_count -ne 2 || $bounded_curl_count -ne $curl_count ]]; then
-    printf '%s must keep both downloads on the bounded curl arguments\n' \
-      "$download_script" >&2
-    exit 1
-  fi
+for path in "${shell_files[@]}"; do
+  bash -n "$path"
 done
 
-if grep -Fq '"$hermes_home/bin/uv" pip install' guest/bootstrap.sh; then
-  printf 'bootstrap must keep messaging dependencies on the locked uv sync path\n' >&2
-  exit 1
-fi
-if grep -Fq 'first runtime start failed; deleted' internal/app/lifecycle.go; then
-  printf 'first-start failures must preserve resumable owned runtime state\n' >&2
-  exit 1
-fi
-if grep -Fq 'executorStartTimeout' internal/app/executor.go; then
-  printf 'Executor auto-start must use the centralized startup deadline\n' >&2
-  exit 1
-fi
-if grep -Fq ': "${HERMES_BOX_NETWORK_MODE' tests/lifecycle.sh; then
-  printf 'lifecycle test must exercise the default full network mode\n' >&2
-  exit 1
-fi
-if grep -RFq 'hermes login --provider openai-codex' README.md AGENTS.md internal/app; then
-  printf 'operator guidance contains the removed Hermes login command\n' >&2
-  exit 1
+if command -v shellcheck >/dev/null 2>&1; then
+  shellcheck -e SC1091 "${shell_files[@]}"
+else
+  printf 'shellcheck not installed; skipping shell lint\n' >&2
 fi
 
-./tests/workspace-seed.sh
-./tests/tmux.sh
-./tests/executor-extract.sh
-./tests/executor-runtime.sh
-python3 ./tests/hermes-gated-approval.py
+if command -v visudo >/dev/null 2>&1; then
+  visudo -cf guest/hermes-box.sudoers
+else
+  printf 'visudo not installed; skipping sudoers parse\n' >&2
+fi
 
-./bin/hermes-box help >/dev/null
-./bin/hermes-box executor help >/dev/null
-
-override_help=$(
-  HERMES_BOX_CONFIG="$root/tests/config-precedence.conf" \
-    HERMES_BOX_SSH_PORT=2298 \
-    ./bin/hermes-box help
+grep -Fq 'agent ALL=(ALL:ALL) NOPASSWD: ALL' guest/hermes-box.sudoers
+grep -Fq 'User=agent' guest/hermes.service
+grep -Fq '/data/executor:/data' guest/executor.service
+grep -Fq '127.0.0.1:4788:4788' guest/executor.service
+grep -Fq 'Before=hermes.service executor.service' guest/hermes-box-recover.service
+grep -Fq '/var/lib/hermes-box/update.json' guest/hermes-box-recover
+grep -Fq 'xterm-ghostty.terminfo' release/build-provisioner.sh
+grep -Eq '^UBUNTU_APT_SNAPSHOT=[0-9]{8}T[0-9]{6}Z$' release/pins.env
+grep -Eq '^UBUNTU_APT_RESOLUTE_INRELEASE_SHA256=[a-f0-9]{64}$' release/pins.env
+grep -Eq '^UBUNTU_APT_RESOLUTE_UPDATES_INRELEASE_SHA256=[a-f0-9]{64}$' release/pins.env
+grep -Eq '^UBUNTU_APT_RESOLUTE_BACKPORTS_INRELEASE_SHA256=[a-f0-9]{64}$' release/pins.env
+grep -Eq '^UBUNTU_APT_RESOLUTE_SECURITY_INRELEASE_SHA256=[a-f0-9]{64}$' release/pins.env
+grep -Fq 'configure-apt-snapshot.sh' release/build-provisioner.sh
+grep -Fq 'gpgv --keyring "$keyring" "$inrelease"' release/configure-apt-snapshot.sh
+grep -Fq 'https://snapshot.ubuntu.com/ubuntu/' release/configure-apt-snapshot.sh
+grep -Fq 'Dir::State::status=$work/dpkg-status' release/build-provisioner.sh
+grep -Fq 'apt-get --assume-yes --download-only' release/build-provisioner.sh
+grep -Fq 'provisioner package attempt %d incomplete; retaining downloaded packages' release/build-provisioner.sh
+grep -Fq 'HERMES_BOX_APT_CACHE' release/build-provisioner.sh
+grep -Fq 'HERMES_BOX_APT_CACHE' .github/workflows/release-artifacts.yml
+if grep -RFq 'APT::Snapshot=' release .github/workflows/release-artifacts.yml; then
+  printf 'release flow must use the exact manual Ubuntu snapshot URL\n' >&2
+  exit 1
+fi
+if grep -Fq 'APT::Snapshot=' .github/workflows/release-artifacts.yml; then
+  printf 'workflow must not apply the guest package snapshot to runner tooling\n' >&2
+  exit 1
+fi
+grep -Fq -- '--require-hashes' release/lib.sh
+grep -Fq 'remove_python_bytecode "$work/source"' release/build-hermes-source.sh
+grep -Fq '"$work/source/hermes_box_release/test_gated_approval.py"' release/build-hermes-source.sh
+grep -Fq '"$work/source/hermes_box_release/patch-hermes-gated-approval.py"' release/build-hermes-source.sh
+grep -Fq 'python="$work/python/bin/python3.13"' release/build-hermes-source.sh
+grep -Fq 'python="$work/python/bin/python3.13"' release/build-hermes-wheels.sh
+grep -Fq -- '--python-platform aarch64-manylinux_2_17' release/build-hermes-wheels.sh
+grep -Fq -- '--generate-hashes --no-header --no-annotate' release/build-hermes-wheels.sh
+grep -Fq 'requirements-linux-arm64.txt' release/build-hermes-wheels.sh
+grep -Fq 'project_wheel=' release/build-hermes-wheels.sh
+grep -Fq 'pip wheel --no-deps --no-build-isolation' release/build-hermes-wheels.sh
+grep -Fq '"--require-hashes", "--requirement", wheelManifest.Requirements' internal/guestupdate/installers.go
+grep -Fq '"--no-deps", wheelManifest.ProjectWheel' internal/guestupdate/installers.go
+if grep -Fq 'uv sync' release/build-hermes-wheels.sh internal/guestupdate/installers.go; then
+  printf 'Hermes offline install must not re-resolve the universal uv lock\n' >&2
+  exit 1
+fi
+if grep -Fq '"-m", "pytest"' internal/guestupdate/installers.go; then
+  printf 'Hermes guest approval validation must use the sealed regression runner\n' >&2
+  exit 1
+fi
+grep -Fq 'tar -xf "$upstream" -C "$work/source" --strip-components=1' release/build-hermes-source.sh
+if grep -Fq 'git -C "$work/source" fetch' release/build-hermes-source.sh; then
+  printf 'Hermes source builder downloaded a verified archive but ignored it\n' >&2
+  exit 1
+fi
+grep -Fq 'gated Hermes source archive contains Python bytecode' release/verify-release.sh
+grep -Fq 'offline Linux ARM64 requirements contain a Windows-only dependency' release/verify-release.sh
+grep -Eq '^pip==[^ ]+ --hash=sha256:[a-f0-9]{64}$' release/python-build-requirements.txt
+grep -Eq '^PyYAML==[^ ]+ --hash=sha256:[a-f0-9]{64}$' release/python-build-requirements.txt
+grep -Eq '^setuptools==[^ ]+ --hash=sha256:[a-f0-9]{64}$' release/python-build-requirements.txt
+(
+  # shellcheck source=release/pins.env
+  source release/pins.env
+  grep -Fxq "pip==$PIP_VERSION --hash=sha256:$PIP_SHA256" release/python-build-requirements.txt
+  grep -Fxq "PyYAML==$PYYAML_VERSION --hash=sha256:$PYYAML_SHA256" release/python-build-requirements.txt
+  grep -Fxq "setuptools==$SETUPTOOLS_VERSION --hash=sha256:$SETUPTOOLS_SHA256" release/python-build-requirements.txt
 )
-grep -Fq "127.0.0.1:2298" <<<"$override_help"
+if grep -REn 'uv run .*--with|pip (install|download).*setuptools==' release/*.sh; then
+  printf 'release scripts contain an unhashed Python build-tool install\n' >&2
+  exit 1
+fi
 
-echo "static checks passed"
+grep -Fq 'pull_request:' .github/workflows/release-artifacts.yml
+grep -Fq 'shell: bash' .github/workflows/release-artifacts.yml
+grep -Fq 'verify-release-tag:' .github/workflows/release-artifacts.yml
+grep -Fq 'needs: [build-and-verify, verify-release-tag]' .github/workflows/release-artifacts.yml
+grep -Fq 'URIs: https://snapshot.ubuntu.com/ubuntu/$UBUNTU_APT_SNAPSHOT' .github/workflows/release-artifacts.yml
+grep -Fq 'Acquire::https::Verify-Peer=false' .github/workflows/release-artifacts.yml
+grep -Fq 'snapshot bootstrap attempt %d incomplete; retaining verified lists' .github/workflows/release-artifacts.yml
+grep -Fq 'bootstrap package attempt %d incomplete; retaining downloaded packages' .github/workflows/release-artifacts.yml
+grep -Fq 'snapshot verification attempt %d incomplete; retaining verified lists' release/configure-apt-snapshot.sh
+grep -Fq 'Acquire::GzipIndexes=false' .github/workflows/release-artifacts.yml
+grep -Fq 'component/binary-arm64/Packages' .github/workflows/release-artifacts.yml
+grep -Fq 'component/binary-arm64/Packages' release/configure-apt-snapshot.sh
+grep -Fq 'apt-helper cat-file' .github/workflows/release-artifacts.yml
+grep -Fq 'apt-helper cat-file' release/configure-apt-snapshot.sh
+grep -Fq 'expected_size == 0' .github/workflows/release-artifacts.yml
+grep -Fq 'expected_size == 0' release/configure-apt-snapshot.sh
+grep -Fq 'expected four pinned Ubuntu InRelease indexes' release/configure-apt-snapshot.sh
+grep -Fq 'v2.0.0-baseline-assets' .github/workflows/release-artifacts.yml
+grep -Fq 'v2.0.0-assets' .github/workflows/release-artifacts.yml
+grep -Fq -- '-> release/qualification.lock.template' .agents/skills/update-hermes-box/references/components.md
+grep -Fq 'EVENT_COMMIT: ${{ github.event.after }}' .github/workflows/release-artifacts.yml
+grep -Fq 'event_commit=$(git rev-parse "$EVENT_COMMIT^{commit}")' .github/workflows/release-artifacts.yml
+grep -Fq 'workflow_commit=$(git rev-parse "$GITHUB_SHA^{commit}")' .github/workflows/release-artifacts.yml
+grep -Fq '[[ $event_commit != "$workflow_commit" ]]' .github/workflows/release-artifacts.yml
+grep -Fq 'tag_commit=$(git rev-parse "$tag_ref^{commit}")' .github/workflows/release-artifacts.yml
+grep -Fq '[[ $tag_commit != "$event_commit" ]]' .github/workflows/release-artifacts.yml
+grep -Fq 'Immutable Hermes Box v2 asset tags' .github/workflows/release-artifacts.yml
+grep -Fq 'select((.bypass_actors | length) == 0)' .github/workflows/release-artifacts.yml
+grep -Fq 'protected_ruleset_id=$(gh api' .github/workflows/release-artifacts.yml
+grep -Fq -- '--verify-tag' .github/workflows/release-artifacts.yml
+grep -Fq 'git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main' .github/workflows/release-artifacts.yml
+grep -Fq '"internal/**"' .github/workflows/release-artifacts.yml
+grep -Fq 'Prove the exact Executor child loads and runs in Podman' .github/workflows/release-artifacts.yml
+grep -Fq 'Podman package attempt %d incomplete; retaining downloaded packages' .github/workflows/release-artifacts.yml
+grep -Fq 'release/build-provisioner.sh "$artifact_dir"' .github/workflows/release-artifacts.yml
+if grep -Fq 'sudo release/build-provisioner.sh' .github/workflows/release-artifacts.yml; then
+  printf 'release builder must preserve the setup-go path inside the root container\n' >&2
+  exit 1
+fi
+grep -Fq -- '--cgroups=disabled' .github/workflows/release-artifacts.yml
+grep -Fq -- '--volume "$smoke_data:/data" "$runtime_tag"' .github/workflows/release-artifacts.yml
+grep -Fq -- "--format '{{.State.Status}}'" .github/workflows/release-artifacts.yml
+grep -Fq 'actions/attest-build-provenance@' .github/workflows/release-artifacts.yml
+grep -Fq 'HERMES_BOX_E2E_LOCK' tests/lifecycle.sh
+grep -Fq 'HERMES_BOX_E2E_ARTIFACT_DIR' tests/lifecycle.sh
+grep -Fq 'HERMES_BOX_E2E_BASELINE_LOCK' tests/lifecycle.sh
+grep -Fq 'HERMES_BOX_E2E_BASELINE_ARTIFACT_DIR' tests/lifecycle.sh
+grep -Fq 'HERMES_BOX_E2E_ARTIFACT_CACHE' tests/lifecycle.sh
+grep -Fq 'update_components=(node uv claude codex hermes executor)' tests/lifecycle.sh
+grep -Fq 'update "$update_component"' tests/lifecycle.sh
+grep -Fq 'rollback "$update_component"' tests/lifecycle.sh
+grep -Fq -- '--assert-status "$desired_lock" "$applied_lock" "$component" "$previous_lock"' tests/lifecycle.sh
+grep -Fq 'lifecycle failure diagnostics exposed the lock URL credential' tests/lifecycle.sh
+grep -Fq '[[ ! -e $restore_config_dir/hermes-box.lock ]]' tests/lifecycle.sh
+if grep -Fq 'workflow_dispatch:' .github/workflows/release-artifacts.yml; then
+  printf 'release publication must be driven only by the immutable asset tag\n' >&2
+  exit 1
+fi
+
+if [[ -f hermes-box.lock ]]; then
+  if grep -Eq '__[A-Z0-9_]+__' hermes-box.lock; then
+    printf 'promoted root lock contains an unresolved qualification placeholder\n' >&2
+    exit 1
+  fi
+  go run ./release/validate-lock.go hermes-box.lock
+  grep -Fq '/releases/download/v2.0.0-assets/' hermes-box.lock
+else
+  printf 'root hermes-box.lock is intentionally absent until qualification and promotion\n' >&2
+fi
+
+if grep -RFniE 'HERMES_BOX_MACHINE_NAME|hermes-box\.conf|secret-env\.txt|supervisorctl|hermes-box init|package configured' \
+  README.md AGENTS.md PORTABLE_RESTORE.md EXECUTOR_CONNECTIONS.md; then
+  printf 'v2 operator documentation contains a v1 concept\n' >&2
+  exit 1
+fi
+
+./tests/tmux.sh
+./tests/ssh-provisioning.sh
+./bin/hermes-box help >/dev/null
+
+launcher_tmp_root=${TMPDIR:-/tmp}
+launcher_smoke_dir=$(mktemp -d "${launcher_tmp_root%/}/hermes-box-launcher-smoke.XXXXXX")
+trap 'rm -rf "$launcher_smoke_dir"' EXIT
+mkdir -p "$launcher_smoke_dir/home"
+cat >"$launcher_smoke_dir/hermes-box.yaml" <<'EOF'
+schema: 1
+name: launcher-smoke
+vm:
+  cpus: 1
+  memory: 512MiB
+  root_disk: 10GiB
+  data_disk: 1GiB
+ports:
+  executor: 65432
+backup:
+  keep: 1
+EOF
+
+if launcher_smoke_output=$(
+  HERMES_BOX_HOME="$launcher_smoke_dir/home" \
+    ./bin/hermes-box --config "$launcher_smoke_dir/hermes-box.yaml" status 2>&1
+); then
+  printf 'launcher smoke unexpectedly succeeded without a lock file\n' >&2
+  exit 1
+fi
+if [[ $launcher_smoke_output == *'unknown Hermes Box environment setting'* ]]; then
+  printf 'launcher injected an unsupported Hermes Box environment setting\n' >&2
+  exit 1
+fi
+grep -Fq "read $launcher_smoke_dir/hermes-box.lock" <<<"$launcher_smoke_output"
+
+printf 'static checks passed\n'

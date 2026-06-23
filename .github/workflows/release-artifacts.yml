@@ -1,0 +1,432 @@
+name: Release artifact qualification
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/release-artifacts.yml"
+      - "bin/**"
+      - "cmd/**"
+      - "guest/**"
+      - "internal/**"
+      - "release/**"
+      - "tests/**"
+      - "Makefile"
+      - "go.mod"
+      - "go.sum"
+  push:
+    tags:
+      - "v2.0.0-baseline-assets"
+      - "v2.0.0-assets"
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-verify:
+    runs-on: ubuntu-24.04-arm
+    env:
+      UBUNTU_APT_SNAPSHOT: 20260612T235959Z
+      UBUNTU_APT_RESOLUTE_INRELEASE_SHA256: 45f95ce276cdba3e41870516a130e03c58b8b7a79e9546b0efe9e526d255740c
+      UBUNTU_APT_RESOLUTE_UPDATES_INRELEASE_SHA256: 9db03564f66c0fad76abb5da0122cd170301fc8d2b50e6fa6e0b2376524d918c
+      UBUNTU_APT_RESOLUTE_BACKPORTS_INRELEASE_SHA256: f8ce7a267f29066d97590d973497c0a9f51045d6fbe8fb2e6851554045a7eaa3
+      UBUNTU_APT_RESOLUTE_SECURITY_INRELEASE_SHA256: 038b5ebe4fbd0f8877ab877e202236c32ed204a133f193b4d086397fcc6d7dd0
+    defaults:
+      run:
+        shell: bash
+    container:
+      image: ubuntu:26.04@sha256:f47064f97ed1768de77e64328d8206990d8a8502ba64e24506ff35cc47fdaf1c
+      options: --privileged
+    steps:
+      - name: Install build prerequisites
+        run: |
+          # Bootstrap archive-producing tools from the exact signed snapshot.
+          # The base image has no CA bundle. Disable TLS peer verification only
+          # for bootstrap, while pinning every InRelease and retaining APT's
+          # signature and package-hash verification. Re-fetch normally below.
+          sources=/etc/apt/sources.list.d/ubuntu.sources
+          test -f "$sources"
+          sed -i \
+            -e '/^[[:space:]]*Snapshot:/d' \
+            -e "s|^[[:space:]]*URIs:.*|URIs: https://snapshot.ubuntu.com/ubuntu/$UBUNTU_APT_SNAPSHOT|" \
+            "$sources"
+          rm -rf /var/lib/apt/lists/*
+          bootstrap_indexes_ready() (
+            local actual component expected expected_record expected_size inrelease package_index suite
+            local seen=0
+            shopt -s nullglob
+            local inreleases=(/var/lib/apt/lists/*_InRelease)
+            ((${#inreleases[@]} == 4)) || return 1
+            for inrelease in "${inreleases[@]}"; do
+              case $(basename "$inrelease") in
+                *_dists_resolute_InRelease)
+                  expected=$UBUNTU_APT_RESOLUTE_INRELEASE_SHA256 ;;
+                *_dists_resolute-updates_InRelease)
+                  expected=$UBUNTU_APT_RESOLUTE_UPDATES_INRELEASE_SHA256 ;;
+                *_dists_resolute-backports_InRelease)
+                  expected=$UBUNTU_APT_RESOLUTE_BACKPORTS_INRELEASE_SHA256 ;;
+                *_dists_resolute-security_InRelease)
+                  expected=$UBUNTU_APT_RESOLUTE_SECURITY_INRELEASE_SHA256 ;;
+                *) return 1 ;;
+              esac
+              printf '%s  %s\n' "$expected" "$inrelease" | sha256sum --check || return 1
+              ((seen += 1))
+            done
+            [[ $seen == 4 ]] || return 1
+            for suite in resolute resolute-updates resolute-backports resolute-security; do
+              local suite_inreleases=(/var/lib/apt/lists/*_dists_${suite}_InRelease)
+              ((${#suite_inreleases[@]} == 1)) || return 1
+              inrelease=${suite_inreleases[0]}
+              for component in main universe restricted multiverse; do
+                local package_indexes=(/var/lib/apt/lists/*_dists_${suite}_${component}_binary-arm64_Packages*)
+                expected_record=$(awk -v path="$component/binary-arm64/Packages" \
+                  '$3 == path && $1 ~ /^[a-f0-9]{64}$/ { print $1 ":" $2 }' "$inrelease")
+                IFS=: read -r expected expected_size <<<"$expected_record"
+                [[ $expected =~ ^[a-f0-9]{64}$ ]] || return 1
+                [[ $expected_size =~ ^[0-9]+$ ]] || return 1
+                if [[ $expected_size == 0 && ${#package_indexes[@]} == 0 ]]; then
+                  continue
+                fi
+                ((${#package_indexes[@]} == 1)) || return 1
+                package_index=${package_indexes[0]}
+                actual=$(/usr/lib/apt/apt-helper cat-file "$package_index" | sha256sum)
+                [[ ${actual%% *} == "$expected" ]] || return 1
+              done
+            done
+          )
+          ready=false
+          for attempt in $(seq 1 30); do
+            apt-get -o Acquire::https::Verify-Peer=false \
+              -o Acquire::https::Timeout=20 \
+              -o Acquire::GzipIndexes=false update || true
+            if bootstrap_indexes_ready; then
+              ready=true
+              break
+            fi
+            printf 'snapshot bootstrap attempt %d incomplete; retaining verified lists\n' \
+              "$attempt" >&2
+            sleep 15
+          done
+          [[ $ready == true ]]
+          bootstrap_packages_installed=false
+          for attempt in $(seq 1 30); do
+            if DEBIAN_FRONTEND=noninteractive apt-get \
+              -o Acquire::https::Verify-Peer=false \
+              -o Acquire::https::Timeout=20 \
+              -o Acquire::Retries=3 \
+              install -y --no-install-recommends \
+              ca-certificates curl git jq sudo tar util-linux zstd; then
+              bootstrap_packages_installed=true
+              break
+            fi
+            printf 'bootstrap package attempt %d incomplete; retaining downloaded packages\n' \
+              "$attempt" >&2
+            sleep 15
+          done
+          [[ $bootstrap_packages_installed == true ]]
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Verify the signed Ubuntu snapshot indexes
+        run: release/configure-apt-snapshot.sh
+      - name: Verify workflow and release builder pins agree
+        run: |
+          workflow_snapshot=$UBUNTU_APT_SNAPSHOT
+          workflow_resolute=$UBUNTU_APT_RESOLUTE_INRELEASE_SHA256
+          workflow_updates=$UBUNTU_APT_RESOLUTE_UPDATES_INRELEASE_SHA256
+          workflow_backports=$UBUNTU_APT_RESOLUTE_BACKPORTS_INRELEASE_SHA256
+          workflow_security=$UBUNTU_APT_RESOLUTE_SECURITY_INRELEASE_SHA256
+          . release/pins.env
+          workflow_image=$(awk '
+            /^[[:space:]]+container:/ { in_container=1; next }
+            in_container && /^[[:space:]]+image:/ {
+              sub(/^[[:space:]]+image:[[:space:]]*/, "")
+              print
+              exit
+            }
+          ' .github/workflows/release-artifacts.yml)
+          expected=${UBUNTU_BUILDER_IMAGE#docker.io/library/}
+          if [[ $workflow_image != "$expected" ]]; then
+            printf 'workflow builder %s does not match release pin %s\n' \
+              "$workflow_image" "$UBUNTU_BUILDER_IMAGE" >&2
+            exit 1
+          fi
+          if [[ $workflow_snapshot != "$UBUNTU_APT_SNAPSHOT" ]]; then
+            printf 'workflow snapshot %s does not match release pin %s\n' \
+              "$workflow_snapshot" "$UBUNTU_APT_SNAPSHOT" >&2
+            exit 1
+          fi
+          [[ $workflow_resolute == "$UBUNTU_APT_RESOLUTE_INRELEASE_SHA256" ]]
+          [[ $workflow_updates == "$UBUNTU_APT_RESOLUTE_UPDATES_INRELEASE_SHA256" ]]
+          [[ $workflow_backports == "$UBUNTU_APT_RESOLUTE_BACKPORTS_INRELEASE_SHA256" ]]
+          [[ $workflow_security == "$UBUNTU_APT_RESOLUTE_SECURITY_INRELEASE_SHA256" ]]
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Install the pinned uv build tool
+        run: |
+          . release/pins.env
+          archive="$RUNNER_TEMP/uv.tar.gz"
+          curl --fail --location --proto '=https' --tlsv1.2 \
+            --output "$archive" "$UV_URL"
+          printf '%s  %s\n' "$UV_SHA256" "$archive" | sha256sum --check
+          mkdir -p "$RUNNER_TEMP/uv"
+          tar -xzf "$archive" -C "$RUNNER_TEMP/uv"
+          install -m 0755 "$(find "$RUNNER_TEMP/uv" -type f -name uv -print -quit)" \
+            /usr/local/bin/uv
+          uv --version
+      - name: Prove the exact Executor child loads and runs in Podman
+        run: |
+          installed=false
+          for attempt in $(seq 1 30); do
+            if DEBIAN_FRONTEND=noninteractive apt-get \
+              -o Acquire::https::Timeout=20 \
+              -o Acquire::Retries=3 \
+              install -y --no-install-recommends podman skopeo; then
+              installed=true
+              break
+            fi
+            printf 'Podman package attempt %d incomplete; retaining downloaded packages\n' \
+              "$attempt" >&2
+            sleep 15
+          done
+          [[ $installed == true ]]
+          . release/pins.env
+          repository=${EXECUTOR_IMAGE%%:*}
+          runtime_tag=${EXECUTOR_IMAGE%@*}
+          child="$repository@$EXECUTOR_ARM64_DIGEST"
+          archive="$RUNNER_TEMP/executor-linux-arm64.oci.tar"
+          skopeo copy --preserve-digests --override-os linux --override-arch arm64 \
+            "docker://$child" "oci-archive:$archive:$runtime_tag"
+          podman --storage-driver=vfs load --input "$archive"
+          podman --storage-driver=vfs image exists "$runtime_tag"
+          test "$(podman --storage-driver=vfs image inspect \
+            --format '{{.Architecture}}' "$runtime_tag")" = arm64
+          test "$(podman --storage-driver=vfs image inspect \
+            --format '{{.Digest}}' "$runtime_tag")" = "$EXECUTOR_ARM64_DIGEST"
+          smoke_data="$RUNNER_TEMP/executor-smoke-data"
+          mkdir -p "$smoke_data"
+          container=$(podman --storage-driver=vfs run --detach --pull=never \
+            --network=none --cgroups=disabled \
+            --volume "$smoke_data:/data" "$runtime_tag")
+          cleanup() {
+            podman --storage-driver=vfs rm --force "$container" >/dev/null 2>&1 || true
+          }
+          trap cleanup EXIT
+          running=false
+          for _ in 1 2 3 4 5; do
+            if [[ $(podman --storage-driver=vfs inspect \
+              --format '{{.State.Status}}' "$container") == running ]]; then
+              running=true
+              break
+            fi
+            sleep 1
+          done
+          [[ $running == true ]] || {
+            podman --storage-driver=vfs logs "$container" >&2 || true
+            exit 1
+          }
+          cleanup
+          trap - EXIT
+      - name: Build twice and prove deterministic outputs
+        run: |
+          build_set() {
+            artifact_dir=$1
+            mkdir -p "$artifact_dir"
+            release/build-provisioner.sh "$artifact_dir"
+            release/build-hermes-source.sh "$artifact_dir"
+            release/build-hermes-wheels.sh "$artifact_dir" \
+              "$artifact_dir/hermes-agent-gated-0.17.0.tar.zst"
+          }
+
+          first="$RUNNER_TEMP/hermes-box-release"
+          second="$RUNNER_TEMP/hermes-box-release-replay"
+          export HERMES_BOX_APT_CACHE="$RUNNER_TEMP/provisioner-apt-cache"
+          build_set "$first"
+          build_set "$second"
+
+          for artifact in \
+            hermes-box-provisioner-linux-arm64.tar.zst \
+            hermes-agent-gated-0.17.0.tar.zst \
+            hermes-wheels-cp313-linux-arm64.tar.zst; do
+            cmp "$first/$artifact.sha256" "$second/$artifact.sha256"
+          done
+
+          asset_release=v2.0.0-assets
+          if [[ ${GITHUB_REF_TYPE:-} == tag ]]; then
+            asset_release=$GITHUB_REF_NAME
+          fi
+          release/render-lock.sh "$first" "$first/hermes-box.lock" "$asset_release"
+          release/verify-release.sh "$first"
+          {
+            printf '%s\n' '### Candidate release artifacts verified'
+            printf '%s\n' ''
+            printf '%s\n' 'Two clean native ARM64 builds produced identical checksums.'
+            printf '%s\n' 'These files remain candidates until publication, exact-URL re-download verification, and the isolated Lima lifecycle pass.'
+          } >>"$GITHUB_STEP_SUMMARY"
+      - name: Upload qualification candidates
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: hermes-box-v2-linux-arm64-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/hermes-box-release/*.tar.zst
+            ${{ runner.temp }}/hermes-box-release/*.tar.zst.sha256
+            ${{ runner.temp }}/hermes-box-release/hermes-box.lock
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  verify-release-tag:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v2.0.0-')
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Require an immutable annotated tag on reviewed main
+        env:
+          EVENT_COMMIT: ${{ github.event.after }}
+        run: |
+          case $GITHUB_REF_NAME in
+            v2.0.0-baseline-assets | v2.0.0-assets) ;;
+            *) printf 'unsupported release tag: %s\n' "$GITHUB_REF_NAME" >&2; exit 1 ;;
+          esac
+          ruleset_id=$(gh api "repos/$GITHUB_REPOSITORY/rulesets" --jq '
+            .[] | select(.name == "Immutable Hermes Box v2 asset tags") |
+            select(.target == "tag" and .enforcement == "active") | .id')
+          protected_ruleset_id=$(gh api \
+            "repos/$GITHUB_REPOSITORY/rulesets/$ruleset_id" --jq '
+            select(.conditions.ref_name.include | index("refs/tags/v2.0.0-*")) |
+            select(([.rules[].type] | index("update")) != null) |
+            select(([.rules[].type] | index("deletion")) != null) |
+            select((.bypass_actors | length) == 0) |
+            .id')
+          if [[ -z $ruleset_id || $protected_ruleset_id != "$ruleset_id" ]]; then
+            printf 'active no-bypass update/deletion protection is required for v2 asset tags\n' >&2
+            exit 1
+          fi
+          event_commit=$(git rev-parse "$EVENT_COMMIT^{commit}")
+          workflow_commit=$(git rev-parse "$GITHUB_SHA^{commit}")
+          if [[ $event_commit != "$workflow_commit" ]]; then
+            printf 'push event commit %s does not match workflow commit %s\n' \
+              "$event_commit" "$workflow_commit" >&2
+            exit 1
+          fi
+          git fetch --force --no-tags origin \
+            "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          tag_ref="refs/tags/$GITHUB_REF_NAME"
+          if [[ $(git cat-file -t "$tag_ref") != tag ]]; then
+            printf 'asset publication requires an annotated tag: %s\n' \
+              "$GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          object_tag_name=$(git cat-file -p "$tag_ref" | sed -n 's/^tag //p')
+          if [[ $object_tag_name != "$GITHUB_REF_NAME" ]]; then
+            printf 'event tag object names %s, expected %s\n' \
+              "$object_tag_name" "$GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          tag_commit=$(git rev-parse "$tag_ref^{commit}")
+          if [[ $tag_commit != "$event_commit" ]]; then
+            printf 'current tag commit %s does not match push event commit %s\n' \
+              "$tag_commit" "$event_commit" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin \
+            '+refs/heads/main:refs/remotes/origin/main'
+          if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
+            printf 'release tag commit %s is not reachable from reviewed main\n' \
+              "$tag_commit" >&2
+            exit 1
+          fi
+
+  publish:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v2.0.0-')
+    needs: [build-and-verify, verify-release-tag]
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      attestations: write
+      contents: write
+      id-token: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
+        with:
+          name: hermes-box-v2-linux-arm64-${{ github.sha }}
+          path: ${{ runner.temp }}/hermes-box-release
+      - name: Attest every immutable release input
+        uses: actions/attest-build-provenance@43d14bc2b83dec42d39ecae14e916627a18bb661 # v3
+        with:
+          subject-path: |
+            ${{ runner.temp }}/hermes-box-release/hermes-box-provisioner-linux-arm64.tar.zst
+            ${{ runner.temp }}/hermes-box-release/hermes-box-provisioner-linux-arm64.tar.zst.sha256
+            ${{ runner.temp }}/hermes-box-release/hermes-agent-gated-0.17.0.tar.zst
+            ${{ runner.temp }}/hermes-box-release/hermes-agent-gated-0.17.0.tar.zst.sha256
+            ${{ runner.temp }}/hermes-box-release/hermes-wheels-cp313-linux-arm64.tar.zst
+            ${{ runner.temp }}/hermes-box-release/hermes-wheels-cp313-linux-arm64.tar.zst.sha256
+            ${{ runner.temp }}/hermes-box-release/hermes-box.lock
+      - name: Publish the immutable asset release
+        run: |
+          . release/pins.env
+          artifact_dir="$RUNNER_TEMP/hermes-box-release"
+          asset_release=$GITHUB_REF_NAME
+          if gh release view "$asset_release" >/dev/null 2>&1; then
+            printf 'release %s already exists; refusing to replace immutable assets\n' \
+              "$asset_release" >&2
+            exit 1
+          fi
+          git fetch --force --no-tags origin \
+            "refs/tags/$asset_release:refs/tags/$asset_release"
+          tag_ref="refs/tags/$asset_release"
+          if [[ $(git cat-file -t "$tag_ref") != tag ]] || \
+             [[ $(git rev-parse "$tag_ref^{commit}") != $(git rev-parse "$GITHUB_SHA^{commit}") ]]; then
+            printf 'release tag no longer resolves to the annotated workflow commit\n' >&2
+            exit 1
+          fi
+          title='Hermes Box v2 qualified ARM64 inputs'
+          notes='Reproducible Ubuntu 26.04 ARM64 provisioner and offline Hermes inputs. Promote the generated lock only after exact-URL verification and an isolated Lima lifecycle pass.'
+          if [[ $asset_release == "$BASELINE_ASSET_RELEASE" ]]; then
+            title='Hermes Box v2 baseline ARM64 inputs'
+            notes='Reviewed reproducible baseline inputs for the first real six-component update and rollback qualification. This baseline lock is not eligible for root promotion.'
+          fi
+          gh release create "$asset_release" \
+            "$artifact_dir"/*.tar.zst \
+            "$artifact_dir"/*.tar.zst.sha256 \
+            "$artifact_dir/hermes-box.lock" \
+            --verify-tag \
+            --title "$title" \
+            --notes "$notes"
+      - name: Re-download and verify exact published URLs
+        run: |
+          command -v zstd >/dev/null
+          . release/pins.env
+          destination="$RUNNER_TEMP/published"
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$GITHUB_REF_NAME"
+          mkdir -p "$destination"
+          for file in \
+            hermes-box-provisioner-linux-arm64.tar.zst \
+            hermes-box-provisioner-linux-arm64.tar.zst.sha256 \
+            hermes-agent-gated-0.17.0.tar.zst \
+            hermes-agent-gated-0.17.0.tar.zst.sha256 \
+            hermes-wheels-cp313-linux-arm64.tar.zst \
+            hermes-wheels-cp313-linux-arm64.tar.zst.sha256 \
+            hermes-box.lock; do
+            curl --fail --location --retry 5 --retry-all-errors \
+              --proto '=https' --tlsv1.2 \
+              --output "$destination/$file" "$base/$file"
+          done
+          release/verify-release.sh "$destination"

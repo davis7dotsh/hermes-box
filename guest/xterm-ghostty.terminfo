@@ -1,0 +1,2 @@
+xterm-ghostty|Ghostty terminal emulator,
+	use=xterm-256color,

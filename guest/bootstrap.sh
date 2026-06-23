@@ -1,369 +1,152 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ $EUID -ne 0 ]]; then
-  echo "bootstrap must run as root" >&2
+if ((EUID != 0)); then
+  printf 'bootstrap must run as root\n' >&2
   exit 1
 fi
 
-public_key_file=${1:?public key file is required}
+provisioner=${1:?usage: bootstrap.sh PROVISIONER_DIR LIMA_DATA_MOUNT}
+data_source=${2:?usage: bootstrap.sh PROVISIONER_DIR LIMA_DATA_MOUNT}
 
-# smolvm's builder hostname is not always present in /etc/hosts. Add it before
-# the first sudo invocation so provisioning stays quiet and name lookups do not
-# stall while apt and the pinned installers are running.
-guest_hostname=$(hostname)
-if ! grep -Eq "[[:space:]]$guest_hostname([[:space:]]|$)" /etc/hosts; then
-  printf '127.0.1.1 %s\n' "$guest_hostname" >>/etc/hosts
-fi
-
-hermes_home=/workspace/hermes-home
-codex_home=/workspace/codex-home
-supported_hermes_commit=2bd1977d8fad185c9b4be47884f7e87f1add0ce3
-hermes_installer_sha256=dbd9d555ed4ac67bd1fc71ba6a39b410cf2af0ebcfd8f4889e086af78c9ddcaa
-uv_version=0.11.23
-uv_archive_sha256=1873a77350f6621279ae1a0d2227f2bd8b67131598f14a7eb0ba2215d3da2c98
-download_curl_args=(
-  --proto '=https'
-  --tlsv1.2
-  -fsSL
-  --connect-timeout 15
-  --max-time 600
-  --retry 5
-  --retry-delay 2
-  --retry-max-time 600
-  --retry-all-errors
-)
-
-export DEBIAN_FRONTEND=noninteractive
-cat >/etc/apt/apt.conf.d/80-hermes-box-network <<'EOF'
-Acquire::ForceIPv4 "true";
-Acquire::Retries "3";
-Acquire::http::Timeout "30";
-Acquire::https::Timeout "30";
-EOF
-
-apt_ready=false
-for attempt in {1..6}; do
-  set +e
-  timeout --signal=TERM --kill-after=30s 3m \
-    apt-get update -o APT::Update::Error-Mode=any
-  apt_status=$?
-  set -e
-  if [[ $apt_status -eq 0 ]]; then
-    apt_ready=true
-    break
-  fi
-  if [[ $apt_status -eq 124 || $apt_status -eq 137 ]]; then
-    printf 'apt index refresh timed out after 3 minutes (attempt %d/6)\n' \
-      "$attempt" >&2
-  else
-    printf 'apt index refresh failed with status %d (attempt %d/6)\n' \
-      "$apt_status" "$attempt" >&2
-  fi
-  if [[ $attempt -lt 6 ]]; then
-    sleep 5
-  fi
+for required in \
+  "$provisioner/hermes-box-guest" \
+  "$provisioner/hermes.service" \
+  "$provisioner/executor.service" \
+  "$provisioner/hermes-box-recover.service" \
+  "$provisioner/hermes-box-recover" \
+  "$provisioner/hermes-box.sudoers" \
+  "$provisioner/cloud-init.yaml" \
+  "$provisioner/tm" \
+  "$provisioner/tmux.conf" \
+  "$provisioner/xterm-ghostty.terminfo"; do
+  [[ -f $required ]] || {
+    printf 'missing provisioner input: %s\n' "$required" >&2
+    exit 1
+  }
 done
-if [[ $apt_ready != true ]]; then
-  printf 'apt index refresh failed after 6 bounded attempts\n' >&2
+
+if [[ -d $provisioner/debs ]]; then
+  mapfile -t debs < <(find "$provisioner/debs" -maxdepth 1 -type f -name '*.deb' -print | sort)
+  ((${#debs[@]} > 0)) || {
+    printf 'provisioner deb directory is empty\n' >&2
+    exit 1
+  }
+  dpkg --install "${debs[@]}"
+fi
+
+[[ $data_source == /* && -d $data_source ]] || {
+  printf 'Lima data mount must be an absolute directory: %s\n' "$data_source" >&2
   exit 1
-fi
-# The pinned installer's python-deps stage checks for these three build
-# packages and starts a second apt update/install when any is absent. Keep them
-# in this one bounded transaction so the stage cannot duplicate apt work.
-apt_packages=(
-  build-essential
-  ca-certificates
-  curl
-  git
-  libffi-dev
-  ncurses-term
-  openssh-server
-  procps
-  python3
-  python3-dev
-  ripgrep
-  sudo
-  supervisor
-  tmux
-  xz-utils
-)
-if [[ ${HERMES_BOX_EXECUTOR_ENABLED:-false} == true ]]; then
-  apt_packages+=(skopeo)
-fi
-set +e
-timeout --signal=TERM --kill-after=30s 20m \
-  apt-get install -y --no-install-recommends "${apt_packages[@]}"
-apt_install_status=$?
-set -e
-if [[ $apt_install_status -eq 124 || $apt_install_status -eq 137 ]]; then
-  printf 'apt package installation timed out after 20 minutes\n' >&2
+}
+mountpoint -q "$data_source" || {
+  printf 'Lima data disk is not mounted: %s\n' "$data_source" >&2
   exit 1
+}
+filesystem=$(findmnt --noheadings --output FSTYPE --target "$data_source" | tr -d '[:space:]')
+[[ $filesystem == ext4 ]] || {
+  printf 'persistent data mount must be ext4, got %s\n' "$filesystem" >&2
+  exit 1
+}
+
+mkdir -p /data
+if ! grep -Fq "$data_source /data " /etc/fstab; then
+  printf '%s /data none bind,x-systemd.requires-mounts-for=%s 0 0\n' "$data_source" "$data_source" >>/etc/fstab
 fi
-if [[ $apt_install_status -ne 0 ]]; then
-  printf 'apt package installation failed with status %d\n' \
-    "$apt_install_status" >&2
-  exit "$apt_install_status"
+mountpoint -q /data || mount --bind "$data_source" /data
+
+if ! id agent >/dev/null 2>&1; then
+  useradd --uid 1000 --create-home --shell /bin/bash agent
 fi
+[[ $(id -u agent) == 1000 && $(id -g agent) == 1000 ]] || {
+  printf 'agent must have uid/gid 1000\n' >&2
+  exit 1
+}
 
-if ! id boxadmin >/dev/null 2>&1; then
-  useradd --uid 1001 --create-home --shell /bin/bash boxadmin
+# Lima initially places its transport key in the disposable home. Keep that
+# host-owned transport identity on the root disk before the persistent home is
+# mounted over it, so restores receive a fresh key instead of carrying one in
+# the data backup.
+[[ -s /home/agent/.ssh/authorized_keys ]] || {
+  printf 'Lima transport key is missing before persistent-home bind\n' >&2
+  exit 1
+}
+install -D -o root -g root -m 0600 \
+  /home/agent/.ssh/authorized_keys /etc/ssh/authorized_keys.d/agent
+
+# Apply the reviewed SSH fragment only after the Lima transport key has a
+# root-owned home outside the soon-to-be-persistent agent home. Reloading sshd
+# preserves this provisioning connection while making every new connection use
+# only the root-owned key path.
+command -v cloud-init >/dev/null 2>&1 || {
+  printf 'cloud-init is required to apply the reviewed SSH configuration\n' >&2
+  exit 1
+}
+cloud-init schema -c "$provisioner/cloud-init.yaml"
+cloud-init single --name write_files --frequency always \
+  --file "$provisioner/cloud-init.yaml"
+[[ $(stat -c '%U:%G:%a' /etc/ssh/sshd_config.d/00-hermes-box.conf) == root:root:644 ]] || {
+  printf 'Hermes Box sshd configuration has unsafe ownership or permissions\n' >&2
+  exit 1
+}
+[[ $(stat -c '%U:%G:%a' /etc/ssh/authorized_keys.d/agent) == root:root:600 ]] || {
+  printf 'Lima transport key has unsafe ownership or permissions\n' >&2
+  exit 1
+}
+/usr/sbin/sshd -t
+effective_sshd=$(/usr/sbin/sshd -T -C user=agent,host=localhost,addr=127.0.0.1)
+grep -Fxq 'authorizedkeysfile /etc/ssh/authorized_keys.d/%u' <<<"$effective_sshd" || {
+  printf 'sshd did not select the root-owned Hermes Box authorized-keys path\n' >&2
+  exit 1
+}
+grep -Fxq 'passwordauthentication no' <<<"$effective_sshd" || {
+  printf 'sshd did not disable password authentication\n' >&2
+  exit 1
+}
+grep -Fxq 'kbdinteractiveauthentication no' <<<"$effective_sshd" || {
+  printf 'sshd did not disable keyboard-interactive authentication\n' >&2
+  exit 1
+}
+systemctl reload ssh.service
+systemctl is-active --quiet ssh.service
+rm -f /home/agent/.ssh/authorized_keys
+
+mkdir -p /data/home/agent/workspace /data/executor /data/cache
+chown -R 1000:1000 /data/home /data/executor /data/cache
+chmod 0700 /data/home/agent /data/executor
+
+mkdir -p /home/agent
+if ! grep -Fq '/data/home/agent /home/agent ' /etc/fstab; then
+  printf '/data/home/agent /home/agent none bind,x-systemd.requires-mounts-for=/data 0 0\n' >>/etc/fstab
 fi
-if ! id hermes >/dev/null 2>&1; then
-  useradd --uid 1002 --create-home --shell /bin/bash hermes
-fi
-passwd --delete boxadmin
-passwd --lock hermes
+mountpoint -q /home/agent || mount --bind /data/home/agent /home/agent
+ln -sfn /home/agent/workspace /workspace
 
-install -o root -g root -m 0755 \
-  /tmp/hermes-box-install-node.sh \
-  /usr/local/sbin/hermes-box-install-node
-/usr/local/sbin/hermes-box-install-node 24
-
-install -d -o boxadmin -g boxadmin -m 0700 /home/boxadmin/.ssh
-install -o boxadmin -g boxadmin -m 0600 \
-  "$public_key_file" /home/boxadmin/.ssh/authorized_keys
-install -d -o root -g root -m 0755 /usr/local/share/hermes-box
-install -o root -g root -m 0644 \
-  /tmp/hermes-box-boxadmin.bash_profile \
-  /usr/local/share/hermes-box/boxadmin.bash_profile
-install -o boxadmin -g boxadmin -m 0644 \
-  /usr/local/share/hermes-box/boxadmin.bash_profile \
-  /home/boxadmin/.bash_profile
-install -o root -g root -m 0755 \
-  /tmp/hermes-box-tm /usr/local/bin/tm
-install -o root -g root -m 0644 \
-  /tmp/hermes-box-tmux.conf /etc/tmux.conf
-
-cat >/etc/ssh/sshd_config.d/99-hermes-box.conf <<'EOF'
-PasswordAuthentication no
-KbdInteractiveAuthentication no
-PermitRootLogin no
-PubkeyAuthentication yes
-AllowUsers boxadmin
-AllowAgentForwarding no
-AllowTcpForwarding no
-DisableForwarding yes
-GatewayPorts no
-X11Forwarding no
-PermitTunnel no
-PermitUserEnvironment no
-AcceptEnv COLORTERM TERM_PROGRAM TERM_PROGRAM_VERSION
-EOF
-
-install -o root -g root -m 0440 \
-  /tmp/hermes-box-sudoers /etc/sudoers.d/hermes-box
-visudo --check
-
-chown hermes:hermes /workspace
-chmod 0750 /workspace
-install -d -o hermes -g hermes -m 0700 "$hermes_home"
-install -d -o hermes -g hermes -m 0750 "$hermes_home/logs"
-install -d -o hermes -g hermes -m 0700 "$codex_home"
-install -d -o hermes -g hermes -m 0750 "$codex_home/bin"
-install -d -o hermes -g hermes -m 0750 /workspace/work
-
-rm -rf /home/hermes/.hermes
-ln -s "$hermes_home" /home/hermes/.hermes
-chown -h hermes:hermes /home/hermes/.hermes
+install -D -m 0755 "$provisioner/hermes-box-guest" /usr/local/libexec/hermes-box-guest
+install -D -m 0755 "$provisioner/hermes-box-recover" /usr/local/libexec/hermes-box-recover
+install -D -m 0755 "$provisioner/tm" /usr/local/bin/tm
+install -D -m 0644 "$provisioner/tmux.conf" /etc/tmux.conf
+tic -x -o /usr/share/terminfo "$provisioner/xterm-ghostty.terminfo"
+infocmp -x xterm-ghostty >/dev/null
+install -D -m 0644 "$provisioner/hermes.service" /etc/systemd/system/hermes.service
+install -D -m 0644 "$provisioner/executor.service" /etc/systemd/system/executor.service
+install -D -m 0644 "$provisioner/hermes-box-recover.service" /etc/systemd/system/hermes-box-recover.service
+install -D -m 0440 "$provisioner/hermes-box.sudoers" /etc/sudoers.d/hermes-box
 
 cat >/etc/profile.d/hermes-box.sh <<'EOF'
-export HERMES_HOME=/workspace/hermes-home
-export CODEX_HOME=/workspace/codex-home
-export CODEX_INSTALL_DIR=$CODEX_HOME/bin
-export PATH=$CODEX_HOME/bin:/usr/local/bin:$PATH
-cd /workspace/work 2>/dev/null || true
+export PATH=/opt/hermes-box/tooling/current/node/bin:/opt/hermes-box/tooling/current/uv/bin:/opt/hermes-box/current/claude/bin:/opt/hermes-box/current/codex/bin:/opt/hermes-box/current/hermes/bin:$PATH
+export CODEX_HOME=/home/agent/.codex
+export HERMES_HOME=/home/agent/.hermes
+export DISABLE_AUTOUPDATER=1
+if [[ $- == *i* && -n ${SSH_CONNECTION:-} ]]; then
+  exec tm
+fi
 EOF
 chmod 0644 /etc/profile.d/hermes-box.sh
 
-install -o root -g root -m 0755 \
-  /tmp/hermes-box-start.sh /usr/local/sbin/hermes-box-start
-install -o root -g root -m 0755 \
-  /tmp/hermes-box-entrypoint.sh /usr/local/sbin/hermes-box-entrypoint
-install -o root -g root -m 0755 \
-  /tmp/hermes-box-executor.sh /usr/local/sbin/hermes-box-executor
-install -o root -g root -m 0755 \
-  /tmp/hermes-box-extract-executor.py \
-  /usr/local/sbin/hermes-box-extract-executor
-install -o root -g root -m 0755 \
-  /tmp/hermes-box-workspace-seed.sh \
-  /usr/local/sbin/hermes-box-workspace-seed
-install -o root -g root -m 0644 \
-  /tmp/hermes-box-supervisord.conf /etc/supervisor/supervisord.conf
-
-if [[ ${HERMES_INSTALL_COMMIT:-} != "$supported_hermes_commit" ]]; then
-  printf 'unsupported Hermes commit for pinned installer: %s\n' \
-    "${HERMES_INSTALL_COMMIT:-<unset>}" >&2
-  exit 1
-fi
-
-# The upstream installer deliberately reuses a managed uv binary when one is
-# already present. Pin that binary to the release proven by bounded cold- and
-# warm-cache Hermes builds under smolvm. Downloading the release archive
-# directly and verifying its reviewed digest keeps fresh image creation
-# independent of whichever uv release is newest.
-uv_archive=/tmp/hermes-box-uv.tar.gz
-uv_extract=/tmp/hermes-box-uv
-rm -rf -- "$uv_archive" "$uv_extract"
-curl "${download_curl_args[@]}" \
-  "https://github.com/astral-sh/uv/releases/download/$uv_version/uv-aarch64-unknown-linux-gnu.tar.gz" \
-  -o "$uv_archive"
-printf '%s  %s\n' "$uv_archive_sha256" "$uv_archive" |
-  sha256sum --check --status
-mkdir -p "$uv_extract"
-tar -xzf "$uv_archive" --no-same-owner -C "$uv_extract"
-install -d -o hermes -g hermes -m 0750 "$hermes_home/bin"
-install -o hermes -g hermes -m 0755 \
-  "$uv_extract/uv-aarch64-unknown-linux-gnu/uv" \
-  "$hermes_home/bin/uv"
-install -o hermes -g hermes -m 0755 \
-  "$uv_extract/uv-aarch64-unknown-linux-gnu/uvx" \
-  "$hermes_home/bin/uvx"
-rm -rf -- "$uv_archive" "$uv_extract"
-"$hermes_home/bin/uv" --version
-
-curl "${download_curl_args[@]}" \
-  "https://raw.githubusercontent.com/NousResearch/hermes-agent/$HERMES_INSTALL_COMMIT/scripts/install.sh" \
-  -o /tmp/hermes-install.sh
-printf '%s  %s\n' "$hermes_installer_sha256" /tmp/hermes-install.sh |
-  sha256sum --check --status
-chmod 0755 /tmp/hermes-install.sh
-
-installer_args=(
-  --non-interactive
-  --hermes-home "$hermes_home"
-  --commit "$HERMES_INSTALL_COMMIT"
-)
-installer_stages=(repository venv python-deps path config complete)
-for installer_stage in "${installer_stages[@]}"; do
-  set +e
-  HERMES_HOME="$hermes_home" \
-    timeout --signal=TERM --kill-after=30s 20m \
-    /tmp/hermes-install.sh \
-    "${installer_args[@]}" \
-    --stage "$installer_stage"
-  installer_status=$?
-  set -e
-  if [[ $installer_status -eq 124 || $installer_status -eq 137 ]]; then
-    printf 'Hermes installer stage %s timed out after 20 minutes\n' \
-      "$installer_stage" >&2
-    exit 1
-  fi
-  if [[ $installer_status -ne 0 ]]; then
-    printf 'Hermes installer stage %s failed with status %d\n' \
-      "$installer_stage" "$installer_status" >&2
-    exit "$installer_status"
-  fi
-done
-
-# Hermes' stock 0.17.0 approval modes do not include the conservative one-shot
-# Codex reviewer. Apply the source extension only to the reviewed commit. The
-# patcher verifies every upstream anchor and compiles the result before it
-# writes gated mode into config.yaml, so revision drift cannot leave a YAML-only
-# gate that silently does nothing.
-/usr/local/lib/hermes-agent/venv/bin/python \
-  /tmp/hermes-box-patch-hermes-gated-approval.py \
-  --source /usr/local/lib/hermes-agent \
-  --module /tmp/hermes-box-hermes-gated-approval.py \
-  --config "$hermes_home/config.yaml"
-HERMES_GATED_APPROVAL_SOURCE=/usr/local/lib/hermes-agent \
-HERMES_GATED_APPROVAL_MODULE=/usr/local/lib/hermes-agent/tools/gated_approval.py \
-HERMES_GATED_APPROVAL_PATCHER=/tmp/hermes-box-patch-hermes-gated-approval.py \
-PYTHONPATH=/usr/local/lib/hermes-agent \
-  /usr/local/lib/hermes-agent/venv/bin/python \
-  /tmp/hermes-box-test-hermes-gated-approval.py
-
-cat >"$codex_home/config.toml" <<'EOF'
-# Hermes Box is the outer sandbox, so Codex runs autonomously inside the VM.
-approval_policy = "never"
-sandbox_mode = "danger-full-access"
-
-# The guest has no desktop keyring. Keep the login cache with the rest of the
-# private Codex state under /workspace so snapshots preserve refreshed tokens.
-cli_auth_credentials_store = "file"
-
-[projects."/workspace/work"]
-trust_level = "trusted"
-EOF
-chown hermes:hermes "$codex_home/config.toml"
-chmod 0600 "$codex_home/config.toml"
-
-# Hermes 0.17.0 defaults small Codex requests to a 12-second gap between SSE
-# events. Reasoning models can legitimately stay quiet longer than that.
-hermes_env=$hermes_home/.env
-if ! grep -q '^HERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS=' "$hermes_env"; then
-  printf '\nHERMES_CODEX_EVENT_STALE_TIMEOUT_SECONDS=120\n' >>"$hermes_env"
-fi
-chown hermes:hermes "$hermes_env"
-chmod 0600 "$hermes_env"
-
-# Add the messaging adapters incrementally through the same checked-in lockfile
-# used by the install stage. This preserves hash-locked dependencies instead of
-# asking pip to re-resolve the entire project from the live package index. Run
-# it before cache cleanup so uv can reuse the artifacts from python-deps.
-(
-  cd /usr/local/lib/hermes-agent
-  timeout --signal=TERM --kill-after=30s 20m env \
-    HERMES_HOME="$hermes_home" \
-    VIRTUAL_ENV=/usr/local/lib/hermes-agent/venv \
-    UV_PROJECT_ENVIRONMENT=/usr/local/lib/hermes-agent/venv \
-    "$hermes_home/bin/uv" sync \
-    --extra all \
-    --extra messaging \
-    --locked
-)
-
-# Drop caches and source-only UI/test payloads after the final locked sync.
-# The npm/browser stages never run, so there are no dependency trees to install
-# and immediately delete.
-rm -rf \
-  /root/.cache \
-  /root/.npm \
-  /usr/local/lib/hermes-agent/.git \
-  /usr/local/lib/hermes-agent/apps \
-  /usr/local/lib/hermes-agent/tests \
-  /usr/local/lib/hermes-agent/website
-
-# Keep the source checkout root-owned, but allow Hermes to lazy-install optional
-# Python dependencies into its own virtual environment.
-if [[ -d /usr/local/lib/hermes-agent/venv ]]; then
-  chown -hR hermes:hermes /usr/local/lib/hermes-agent/venv
-fi
-
-chown -R hermes:hermes "$hermes_home" "$codex_home" /workspace/work
-sudo -iu hermes env HERMES_HOME="$hermes_home" hermes --version
-sudo -iu hermes /usr/local/lib/hermes-agent/venv/bin/python -c 'import discord'
-sudo -iu hermes node --version
-sudo -iu hermes npm --version
-sudo -iu hermes tmux -V
-infocmp -x tmux-256color >/dev/null
-infocmp -x xterm-256color >/dev/null
-# Ubuntu images do not consistently include Ghostty's terminfo entry. The tm
-# wrapper preserves xterm-ghostty when available and otherwise falls back to
-# the installed xterm-256color entry before attaching.
-infocmp -x xterm-ghostty >/dev/null 2>&1 || true
-
-install -d -m 0755 /run/sshd
-ssh-keygen -A
-/usr/sbin/sshd -t
-
-# smolvm 1.0.4 pack snapshots do not preserve the named machine's /workspace
-# disk. Embed a seed copy in the root overlay so the first runtime boot can
-# reconstruct the private workspace without any host mount.
-install -d -m 0700 /var/lib/hermes-box
-rm -f \
-  /var/lib/hermes-box/runtime-ownership-repaired \
-  /var/lib/hermes-box/runtime-ownership-v*
-snapshot_id="base-$(date +%s)-$$"
-printf '%s\n' "$snapshot_id" >/workspace/.hermes-box-snapshot-id
-tar -C /workspace -cpf /var/lib/hermes-box/workspace-snapshot.tar .
-printf '%s\n' "$snapshot_id" >/var/lib/hermes-box/workspace-snapshot.id
-chmod 0600 \
-  /var/lib/hermes-box/workspace-snapshot.tar \
-  /var/lib/hermes-box/workspace-snapshot.id
-sync
-
-# Runtime machines create unique host keys on first boot. Established-machine
-# snapshots retain their keys because this deletion only happens in the builder.
-rm -f /etc/ssh/ssh_host_*
-rm -rf /var/lib/apt/lists/*
+mkdir -p /opt/hermes-box/releases /opt/hermes-box/current \
+  /opt/hermes-box/tooling/current /var/lib/hermes-box /etc/hermes-box
+chmod 0700 /var/lib/hermes-box
+systemctl daemon-reload
+systemctl disable hermes.service executor.service >/dev/null 2>&1 || true
+systemctl enable --now hermes-box-recover.service

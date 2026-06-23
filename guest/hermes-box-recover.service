@@ -1,0 +1,13 @@
+[Unit]
+Description=Block application services during an interrupted Hermes Box transaction
+DefaultDependencies=no
+After=local-fs.target
+Before=hermes.service executor.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/hermes-box-recover
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

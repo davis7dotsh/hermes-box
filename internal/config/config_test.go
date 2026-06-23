@@ -3,267 +3,132 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
-func TestLoadPrecedenceAndQuotedValues(t *testing.T) {
-	root := t.TempDir()
-	configPath := filepath.Join(root, "hermes-box.conf")
-	content := `
-# Comments and export syntax are supported.
-export HERMES_BOX_MACHINE_NAME="configured box"
-HERMES_BOX_SSH_PORT=2999
-HERMES_BOX_CPUS='8'
-HERMES_BOX_NETWORK_MODE=full # required by smolvm 1.0.4
-HERMES_BOX_EXECUTOR_ENABLED=true
-HERMES_BOX_EXECUTOR_PORT=4888
+const validConfig = `schema: 1
+name: main
+vm:
+  cpus: 4
+  memory: 8GiB
+  root_disk: 30GiB
+  data_disk: 50GiB
+ports:
+  executor: 4788
+backup:
+  keep: 5
 `
-	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
-		t.Fatal(err)
-	}
 
-	cfg, err := Load(root, []string{
-		"HERMES_BOX_MACHINE_NAME=environment-box",
-		"HERMES_BOX_SSH_PORT=2444",
-	})
+const validLock = `schema: 1
+host:
+  lima: 2.1.3
+ubuntu:
+  release: "26.04"
+  image: https://cloud-images.ubuntu.com/releases/26.04/release-20260612/ubuntu-26.04-server-cloudimg-arm64.img
+  sha256: 5e1c212ac29354dbf51c5b1926d8a359de57ca8c2d2bdacf17651129c29791cb
+  provisioner: https://example.com/provisioner.tar.zst
+  provisioner_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+tooling:
+  node: {version: 24.0.0, archive: https://example.com/node.tar.xz, sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}
+  uv: {version: 0.1.0, archive: https://example.com/uv.tar.gz, sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc}
+claude:
+  version: 1.0.0
+  package: "@anthropic-ai/claude-code"
+  tarball: https://example.com/claude.tgz
+  integrity: sha512-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==
+codex: {version: 1.0.0, archive: https://example.com/codex.tar.gz, sha256: dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd}
+hermes:
+  repository: https://github.com/example/hermes.git
+  commit: eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+  archive: https://example.com/hermes.tar.gz
+  sha256: ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff
+  uv_lock_sha256: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+  python_archive: https://example.com/python.tar.zst
+  python_sha256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+  wheels_archive: https://example.com/wheels.tar.zst
+  wheels_sha256: cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc
+executor:
+  image: ghcr.io/example/executor:v1@sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd
+  linux_arm64_digest: sha256:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
+`
+
+func TestLoadAndSelectionPrecedence(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, filepath.Join(dir, "chosen.yaml"), validConfig)
+	writeFixture(t, filepath.Join(dir, "hermes-box.lock"), validLock)
+	bundle, err := Load("chosen.yaml", dir, []string{"HERMES_BOX_CONFIG=ignored.yaml"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.MachineName != "environment-box" {
-		t.Fatalf("MachineName = %q", cfg.MachineName)
-	}
-	if cfg.SSHPort != 2444 {
-		t.Fatalf("SSHPort = %d", cfg.SSHPort)
-	}
-	if cfg.CPUs != 8 {
-		t.Fatalf("CPUs = %d", cfg.CPUs)
-	}
-	if cfg.NetworkMode != "full" {
-		t.Fatalf("NetworkMode = %q", cfg.NetworkMode)
-	}
-	if !cfg.ExecutorEnabled {
-		t.Fatal("ExecutorEnabled = false")
-	}
-	if cfg.ExecutorPort != 4888 {
-		t.Fatalf("ExecutorPort = %d", cfg.ExecutorPort)
+	if bundle.Config.Name != "main" || bundle.ConfigPath != filepath.Join(dir, "chosen.yaml") {
+		t.Fatalf("unexpected bundle: %#v", bundle)
 	}
 }
 
-func TestLoadExecutorDefaults(t *testing.T) {
-	cfg, err := Load(t.TempDir(), nil)
+func TestResolvePathUsesEnvironmentThenDefault(t *testing.T) {
+	dir := t.TempDir()
+	got, err := ResolvePath("", dir, []string{"HERMES_BOX_CONFIG=other/config.yaml"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.ExecutorEnabled {
-		t.Fatal("ExecutorEnabled = true")
+	if got != filepath.Join(dir, "other/config.yaml") {
+		t.Fatalf("path = %q", got)
 	}
-	if cfg.ExecutorPort != defaultExecutorPort {
-		t.Fatalf("ExecutorPort = %d", cfg.ExecutorPort)
-	}
-	if cfg.ExecutorImage != defaultExecutorImage {
-		t.Fatalf("ExecutorImage = %q", cfg.ExecutorImage)
-	}
-	if cfg.HermesCommit != defaultHermesCommit {
-		t.Fatalf("HermesCommit = %q", cfg.HermesCommit)
-	}
-	if cfg.NetworkMode != "full" {
-		t.Fatalf("NetworkMode = %q, want literal default %q", cfg.NetworkMode, "full")
+	got, err = ResolvePath("", dir, nil)
+	if err != nil || got != filepath.Join(dir, "hermes-box.yaml") {
+		t.Fatalf("default path = %q, err = %v", got, err)
 	}
 }
 
-func TestLoadRejectsUnpinnedExecutorImage(t *testing.T) {
-	_, err := Load(t.TempDir(), []string{
-		"HERMES_BOX_EXECUTOR_ENABLED=true",
-		"HERMES_BOX_EXECUTOR_IMAGE=ghcr.io/rhyssullivan/executor-selfhost:latest",
-	})
-	if err == nil {
-		t.Fatal("Load accepted an unpinned Executor image")
+func TestLoadRejectsUnknownHermesBoxEnvironment(t *testing.T) {
+	if err := ValidateEnvironment([]string{"HERMES_BOX_CONFG=wrong"}); err == nil {
+		t.Fatal("unknown Hermes Box environment setting was accepted")
 	}
-}
-
-func TestLoadIgnoresUnusedExecutorImageWhenDisabled(t *testing.T) {
-	cfg, err := Load(t.TempDir(), []string{
-		"HERMES_BOX_EXECUTOR_IMAGE=unused-placeholder",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.ExecutorEnabled || cfg.ExecutorImage != "unused-placeholder" {
-		t.Fatalf("Executor config = enabled %t, image %q", cfg.ExecutorEnabled, cfg.ExecutorImage)
-	}
-}
-
-func TestValidateIgnoresUnusedExecutorPortWhenDisabled(t *testing.T) {
-	cfg := Config{
-		MachineName: "box", BuilderName: "builder", SSHPort: 2222,
-		CPUs: 1, MemoryMiB: 1, StorageGB: 1, OverlayGB: 1,
-		NetworkMode: "full",
-	}
-	if err := cfg.Validate(); err != nil {
+	if err := ValidateEnvironment([]string{"HERMES_BOX_HOME=/tmp/state", "NO_COLOR=1"}); err != nil {
 		t.Fatal(err)
 	}
 }
 
-func TestLoadRejectsExecutorPortCollision(t *testing.T) {
-	_, err := Load(t.TempDir(), []string{
-		"HERMES_BOX_EXECUTOR_ENABLED=true",
-		"HERMES_BOX_EXECUTOR_PORT=2222",
-	})
-	if err == nil {
-		t.Fatal("Load accepted colliding SSH and Executor ports")
+func TestStrictYAMLRejectsUnknownDuplicateAndMultipleDocuments(t *testing.T) {
+	for name, content := range map[string]string{
+		"unknown":   validConfig + "surprise: true\n",
+		"duplicate": strings.Replace(validConfig, "name: main", "name: main\nname: other", 1),
+		"multiple":  validConfig + "---\n" + validConfig,
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hermes-box.yaml")
+			writeFixture(t, path, content)
+			if _, err := LoadConfig(path); err == nil {
+				t.Fatal("invalid YAML was accepted")
+			}
+		})
 	}
 }
 
-func TestLoadEmptyValuesUseDefaults(t *testing.T) {
-	root := t.TempDir()
-	configPath := filepath.Join(root, "hermes-box.conf")
-	if err := os.WriteFile(
-		configPath,
-		[]byte("HERMES_BOX_CPUS=\nHERMES_BOX_NETWORK_MODE=\nHERMES_BOX_STORAGE_GB=27\n"),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load(root, []string{
-		"HERMES_BOX_CONFIG=",
-		"HERMES_BOX_MACHINE_NAME=",
-		"HERMES_BOX_SSH_PORT=",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.MachineName != defaultMachineName {
-		t.Fatalf("MachineName = %q", cfg.MachineName)
-	}
-	if cfg.SSHPort != defaultSSHPort {
-		t.Fatalf("SSHPort = %d", cfg.SSHPort)
-	}
-	if cfg.CPUs != defaultCPUs {
-		t.Fatalf("CPUs = %d", cfg.CPUs)
-	}
-	if cfg.NetworkMode != defaultNetworkMode {
-		t.Fatalf("NetworkMode = %q", cfg.NetworkMode)
-	}
-	if cfg.StorageGB != 27 {
-		t.Fatalf("StorageGB = %d; empty HERMES_BOX_CONFIG skipped %s", cfg.StorageGB, configPath)
+func TestConfigValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hermes-box.yaml")
+	writeFixture(t, path, strings.Replace(validConfig, "name: main", "name: Main!", 1))
+	if _, err := LoadConfig(path); err == nil {
+		t.Fatal("invalid name was accepted")
 	}
 }
 
-func TestLoadResolvesRelativeDataDirectory(t *testing.T) {
-	root := t.TempDir()
-	cfg, err := Load(root, []string{"HERMES_BOX_DATA_DIR=.test-data"})
-	if err != nil {
-		t.Fatal(err)
+func TestLockValidation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "hermes-box.lock")
+	writeFixture(t, path, strings.Replace(validLock, "lima: 2.1.3", "lima: 2.2.0", 1))
+	if _, err := LoadLock(path); err == nil {
+		t.Fatal("unqualified Lima version was accepted")
 	}
-	want := filepath.Join(root, ".test-data")
-	if cfg.DataDir != want {
-		t.Fatalf("DataDir = %q, want %q", cfg.DataDir, want)
-	}
-}
-
-func TestLoadResolvesExternalSSHKey(t *testing.T) {
-	root := t.TempDir()
-	cfg, err := Load(root, []string{"HERMES_BOX_SSH_KEY=../keys/miles-ed25519"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := filepath.Clean(filepath.Join(root, "../keys/miles-ed25519"))
-	if cfg.SSHKey != want {
-		t.Fatalf("SSHKey = %q, want %q", cfg.SSHKey, want)
+	writeFixture(t, path, strings.Replace(validLock, "release-20260612/", "release/", 1))
+	if _, err := LoadLock(path); err == nil {
+		t.Fatal("moving Ubuntu image was accepted")
 	}
 }
 
-func TestLoadRejectsShellCode(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(
-		filepath.Join(root, "hermes-box.conf"),
-		[]byte("touch /tmp/should-not-run\n"),
-		0o600,
-	); err != nil {
+func writeFixture(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatal(err)
-	}
-
-	if _, err := Load(root, nil); err == nil {
-		t.Fatal("Load succeeded with shell code")
-	}
-}
-
-func TestLoadRejectsUnknownHermesBoxSetting(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(
-		filepath.Join(root, "hermes-box.conf"),
-		[]byte("HERMES_BOX_NETWORK_MOD=none\n"),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	if _, err := Load(root, nil); err == nil {
-		t.Fatal("Load accepted an unknown HERMES_BOX_* setting")
-	}
-}
-
-func TestLoadIgnoresUnrelatedConfigAssignments(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(
-		filepath.Join(root, "hermes-box.conf"),
-		[]byte("EDITOR=vim\nHERMES_BOX_SSH_PORT=2444\n"),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load(root, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.SSHPort != 2444 {
-		t.Fatalf("SSHPort = %d", cfg.SSHPort)
-	}
-}
-
-func TestLoadRejectsUnknownHermesBoxEnvironmentSetting(t *testing.T) {
-	if _, err := Load(t.TempDir(), []string{
-		"HERMES_BOX_NETWORK_MOD=none",
-	}); err == nil {
-		t.Fatal("Load accepted an unknown HERMES_BOX_* environment setting")
-	}
-}
-
-func TestLoadAllowsControlAndUnrelatedEnvironmentSettings(t *testing.T) {
-	root := t.TempDir()
-	if err := os.WriteFile(
-		filepath.Join(root, "secret-env.txt"),
-		[]byte("TELEGRAM_BOT_TOKEN=HERMES_BOX_TELEGRAM_BOT_TOKEN\n"),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := Load(root, []string{
-		"EDITOR=vim",
-		"HERMES_BOX_CONFIG=",
-		"HERMES_BOX_E2E=1",
-		"HERMES_BOX_PROJECT_ROOT=/tmp/hermes-box",
-		"HERMES_BOX_TELEGRAM_BOT_TOKEN=secret",
-	}); err != nil {
-		t.Fatal(err)
-	}
-}
-
-func TestValidateCommit(t *testing.T) {
-	cfg := Config{
-		MachineName:  "box",
-		BuilderName:  "builder",
-		SSHPort:      2222,
-		CPUs:         1,
-		MemoryMiB:    1,
-		StorageGB:    1,
-		OverlayGB:    1,
-		NetworkMode:  "full",
-		HermesCommit: "not-a-full-commit",
-	}
-	if err := cfg.Validate(); err == nil {
-		t.Fatal("Validate accepted an invalid commit")
 	}
 }
