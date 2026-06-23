@@ -51,7 +51,7 @@ jobs:
             "$sources"
           rm -rf /var/lib/apt/lists/*
           bootstrap_indexes_ready() (
-            local actual component expected inrelease package_index suite
+            local actual component expected expected_record expected_size inrelease package_index suite
             local seen=0
             shopt -s nullglob
             local inreleases=(/var/lib/apt/lists/*_InRelease)
@@ -78,11 +78,16 @@ jobs:
               inrelease=${suite_inreleases[0]}
               for component in main universe restricted multiverse; do
                 local package_indexes=(/var/lib/apt/lists/*_dists_${suite}_${component}_binary-arm64_Packages*)
+                expected_record=$(awk -v path="$component/binary-arm64/Packages" \
+                  '$3 == path && $1 ~ /^[a-f0-9]{64}$/ { print $1 ":" $2 }' "$inrelease")
+                IFS=: read -r expected expected_size <<<"$expected_record"
+                [[ $expected =~ ^[a-f0-9]{64}$ ]] || return 1
+                [[ $expected_size =~ ^[0-9]+$ ]] || return 1
+                if [[ $expected_size == 0 && ${#package_indexes[@]} == 0 ]]; then
+                  continue
+                fi
                 ((${#package_indexes[@]} == 1)) || return 1
                 package_index=${package_indexes[0]}
-                expected=$(awk -v path="$component/binary-arm64/Packages" \
-                  '$3 == path && $1 ~ /^[a-f0-9]{64}$/ { print $1 }' "$inrelease")
-                [[ $expected =~ ^[a-f0-9]{64}$ ]] || return 1
                 actual=$(/usr/lib/apt/apt-helper cat-file "$package_index" | sha256sum)
                 [[ ${actual%% *} == "$expected" ]] || return 1
               done

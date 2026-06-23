@@ -55,20 +55,26 @@ for attempt in $(seq 1 30); do
     for component in main universe restricted multiverse; do
       mapfile -t component_packages < <(find "$lists" -maxdepth 1 -type f \
         -name "*_dists_${suite}_${component}_binary-arm64_Packages*" -print)
+      expected_record=$(awk -v path="$component/binary-arm64/Packages" \
+        '$3 == path && $1 ~ /^[a-f0-9]{64}$/ { print $1 ":" $2 }' "${suite_inreleases[0]}")
+      IFS=: read -r expected expected_size <<<"$expected_record"
+      if [[ $expected =~ ^[a-f0-9]{64}$ && $expected_size == 0 && \
+        ${#component_packages[@]} == 0 ]]; then
+        continue
+      fi
       if ((${#component_packages[@]} != 1)); then
         package_indexes_complete=false
         continue
       fi
-      expected=$(awk -v path="$component/binary-arm64/Packages" \
-        '$3 == path && $1 ~ /^[a-f0-9]{64}$/ { print $1 }' "${suite_inreleases[0]}")
       actual=$(/usr/lib/apt/apt-helper cat-file "${component_packages[0]}" | sha256sum)
       actual=${actual%% *}
-      if [[ ! $expected =~ ^[a-f0-9]{64}$ || $actual != "$expected" ]]; then
+      if [[ ! $expected =~ ^[a-f0-9]{64}$ || ! $expected_size =~ ^[0-9]+$ || \
+        $actual != "$expected" ]]; then
         package_indexes_complete=false
       fi
     done
   done
-  if ((${#inreleases[@]} == 4 && ${#packages[@]} == 16)) && \
+  if ((${#inreleases[@]} == 4 && ${#packages[@]} > 0)) && \
     [[ $package_indexes_complete == true ]]; then
     ready=true
     break
