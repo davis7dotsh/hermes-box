@@ -2,6 +2,7 @@ package process
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -42,4 +43,15 @@ func command(ctx context.Context, spec Spec) *exec.Cmd {
 		cmd.Env = append(os.Environ(), spec.Env...)
 	}
 	return cmd
+}
+
+func ExitStatus(err error) (int, bool) {
+	if err == nil {
+		return 0, true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode(), true
+	}
+	return 0, false
 }

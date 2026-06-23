@@ -1,708 +1,286 @@
 # Hermes Box
 
-Hermes Box runs [Hermes Agent](https://github.com/NousResearch/hermes-agent)
-inside a persistent, isolated smolvm machine.
+Hermes Box creates one rebuildable Ubuntu 26.04 ARM64 agent VM on an Apple
+Silicon Mac. Claude Code, Codex, Hermes Agent, and Executor are installed by
+default.
 
-It is designed for running an autonomous agent without exposing host files,
-the host SSH agent, Docker, or a GPU. Hermes gets its own persistent workspace,
-while the host retains an out-of-band root console and can stop or restore the
-machine regardless of what happens inside it.
+This repository is the v2 implementation. It deliberately does not read,
+upgrade, restore, or adopt v1 smolvm machines, images, snapshots, packages, or
+configuration.
 
-## What You Get
-
-```text
-Ubuntu 26.04 VM
-├── boxadmin                 Key-only SSH entry account
-├── hermes                   Agent account with passwordless full sudo
-├── codex                    Interactive Codex CLI/TUI, full access inside VM
-├── node + npm               Current Node.js 24 LTS toolchain
-├── tmux                     Blessed persistent `main` terminal session
-├── sshd                     Bound to host loopback only
-├── supervisord
-│   ├── optional native Executor self-host service
-│   └── hermes gateway run
-└── /workspace               Private persistent disk
-    ├── hermes-home/         Auth, config, sessions, memory, skills, logs
-    ├── codex-home/          Codex binary, auth, config, sessions, skills, logs
-    ├── executor/data/       Optional Executor database and secret store
-    └── work/                Hermes working directory
-```
-
-Interactive SSH logins authenticate as `boxadmin`, switch to `hermes`, and
-immediately create or attach the tmux session named `main` in `/workspace/work`.
-Noninteractive SSH commands remain explicit and predictable.
-
-## Security Boundaries
-
-- No host directories are mounted.
-- No host SSH agent, Docker socket, or GPU is exposed.
-- SSH accepts only the generated project key.
-- Root login, passwords, forwarding, tunnels, and X11 are disabled.
-- SSH is published only on `127.0.0.1`/`::1`; startup aborts otherwise.
-- Hermes has passwordless full `sudo` inside the isolated VM.
-- Host root recovery remains available through `./bin/hermes-box shell`.
-- Snapshots contain the full VM and may contain credentials.
-
-This protects the host filesystem. With networking enabled, Hermes can still
-reach internet and LAN services and can transmit information it knows.
-
-## Compatibility
-
-The current implementation is tested with:
-
-- macOS on ARM64
-- Go `1.24` or newer
-- smolvm `1.0.4`
-- Ubuntu `26.04`
-- Hermes Agent `0.17.0`
-
-Hermes is pinned to commit
-`2bd1977d8fad185c9b4be47884f7e87f1add0ce3`. The pin is a security boundary:
-the guest provisioning applies a narrow gated-approval source extension whose
-upstream anchors are verified against that revision. Provisioning also fetches
-that commit's installer by immutable URL and verifies its SHA-256 digest. The
-managed `uv` binary is pinned to `0.11.23` by release-archive digest after
-bounded cold- and warm-cache Hermes builds under smolvm. This qualification is
-required because `0.11.22` previously deadlocked while building the project.
-Fresh builders also retry guest DNS and package-index readiness with a bounded
-deadline before installing anything. If smolvm reports networking enabled but
-boots a disposable builder without an IPv4 route, Hermes Box cycles that
-builder before provisioning and fails after three unhealthy boots. Builders
-explicitly use smolvm's `virtio-net` backend rather than its portless TSI
-default so package installation gets a real guest NIC and DNS path. Hermes Box
-also raises smolvm 1.0.4's extraction-cache ceiling for runtime creation and
-verifies the packed-layer marker immediately, preventing that version's cache
-eviction from surfacing later as a failed first boot.
-
-The Ubuntu base selection applies when `init` builds a new image. Existing
-Ubuntu 24.04 machines are not upgraded in place, and restoring a snapshot
-retains the snapshot's archived root filesystem. To move a box itself to
-Ubuntu 26.04, create a new box with `init` under distinct machine names and
-ports, then migrate the needed workspace state deliberately. Keep a package of
-the old box for rollback; restoring that package is recovery, not an OS
-upgrade.
-
-Required host commands:
+## The simple model
 
 ```text
-go 1.24+ smolvm ssh ssh-keygen lsof
+Apple Silicon Mac
+├── hermes-box              One Go CLI
+├── Lima + Apple VZ         Disposable Ubuntu 26.04 root VM
+└── <name>-data             One persistent ext4 disk
+    ├── home/agent          Claude, Codex, and Hermes state plus workspace
+    └── executor            Executor database and secrets
 ```
 
-The launcher needs Go 1.24 or newer to build the host CLI on its first run.
-Check `go version` before invoking it. Once the CLI starts, `init` validates Go
-again along with every other requirement before it creates a key or VM. If Go
-is missing or old, install a supported macOS ARM64 release from
-<https://go.dev/dl/>. If smolvm is missing or has another version, install the
-official Darwin ARM64 asset from the
-[v1.0.4 release](https://github.com/smol-machines/smolvm/releases/tag/v1.0.4).
-Rerun the same probe or `init` command after fixing the prerequisite; preflight
-failures are safe to resume.
-
-The host CLI is written in Go. The small `bin/hermes-box` launcher builds a
-private cached binary under `state/` when the Go sources change, then executes
-it. Guest provisioning remains in Bash because it is native Ubuntu
-system-administration work.
-
-## Quick Start
-
-Clone the repository:
-
-```bash
-git clone https://github.com/davis7dotsh/hermes-box.git
-cd hermes-box
-```
-
-Full outbound networking is the default. The generic “set up a new Hermes Box”
-agent workflow enables Executor so tools and integrations are available; ask
-for a lean box to omit it. For a manual setup, decide before creating the
-machine because adding Executor later requires recreating the box:
-
-```bash
-cp hermes-box.conf.example hermes-box.conf
-sed -i '' \
-  's/HERMES_BOX_EXECUTOR_ENABLED=false/HERMES_BOX_EXECUTOR_ENABLED=true/' \
-  hermes-box.conf
-```
-
-Otherwise no configuration file is required.
-
-Create and start the box:
-
-```bash
-./bin/hermes-box init
-```
-
-`init` creates a temporary networked builder, installs Hermes and the guest
-services, packages a reusable base image, deletes the builder, and starts the
-real runtime box. Before changing anything, it checks macOS ARM64 support,
-exact Go and smolvm versions, secret mappings and referenced host values,
-data-directory writes, requested ports, and machine-name collisions. Its final
-output gives the exact guest sign-in phase and host-side Executor, backup,
-shutdown, and debugging handoff for the selected machine and ports.
-
-If the first runtime boot fails after creation, `init` prints diagnostics and
-preserves the stopped machine so `./bin/hermes-box start` can resume partial
-first-boot work, including a completed Codex setup and already verified
-Executor OCI blobs. Use `destroy --force` followed by `init` only when you
-intend to discard that private partial state and rebuild from scratch.
-
-The generated SSH key, base image, local configuration, snapshots, and runtime
-state are ignored by Git.
-
-## Configure Hermes
-
-Open an interactive SSH session:
-
-```bash
-./bin/hermes-box ssh
-```
-
-You should land in the persistent `main` tmux session without running `sudo`:
-
-```text
-main:0  bash
-```
-
-Authenticate OpenAI Codex once for the gated reviewer and for inference when
-you choose a ChatGPT/Codex subscription model:
-
-```bash
-hermes auth add openai-codex --type oauth
-```
-
-Then configure inference:
-
-```bash
-hermes model
-```
-
-For ChatGPT/Codex subscription inference:
-
-1. Select OpenAI.
-2. Accept the Codex/ChatGPT subscription option; Hermes reuses the saved OAuth
-   credential instead of starting a duplicate device flow.
-3. Select a model.
-
-Start chatting:
-
-```bash
-hermes
-```
-
-The messaging gateway is managed by Supervisor because Hermes Box does not
-boot systemd. After changing Discord or other gateway configuration, reload it
-with:
-
-```bash
-sudo supervisorctl restart hermes
-sudo supervisorctl status hermes
-cat /workspace/hermes-home/gateway_state.json
-```
-
-Do not run `hermes gateway install` or `hermes gateway start` in the box. The
-upstream `hermes gateway status` command checks systemd and may label the
-Supervisor-managed process as manual even when it is healthy. Supervisor,
-`gateway_state.json`, and the gateway log are authoritative.
-
-Hermes authentication and configuration live entirely inside
-`/workspace/hermes-home`.
-
-## Command Approval Gate
-
-New Hermes Box images install a conservative, one-command permission reviewer
-on top of Hermes 0.17.0. Stock Hermes supports `manual`, `smart`, and `off`; the
-`gated` mode here is a source extension, not a YAML-only setting. Provisioning
-therefore follows a hard order:
-
-1. Install the pinned Hermes source revision.
-2. Verify and patch exact upstream anchors in `tools/approval.py` and
-   `gateway/run.py`.
-3. Compile the patched files and run the gated regression suite.
-4. Only then seed `approvals.mode: gated` in the persistent profile.
-
-Any commit mismatch, missing anchor, compile failure, or regression failure
-aborts image creation. The resulting gate sends bounded, secret-redacted turn
-context to `openai-codex / gpt-5.5` with low reasoning and maps configured
-`fast` service to the Responses API `priority` tier. It auto-approves only a
-single invocation when scope is `once`, risk is at most `medium`, and
-confidence is at least `0.75`. It never writes session or permanent approval
-state. Malformed output, reviewer errors, timeouts, unknown/excessive risk,
-unsupported scope, and low confidence all fall through to the existing human
-approval flow with the reviewer reason attached. An explicit reviewer denial
-blocks the command, while Hermes' deterministic hardline blocklist remains
-authoritative before the model is called. Cron stays fail-closed with
-`cron_mode: deny`.
-
-The seeded profile block is:
-
-```yaml
-approvals:
-  mode: gated
-  timeout: 60
-  cron_mode: deny
-  gateway_timeout: 300
-  gate:
-    enabled: true
-    provider: openai-codex
-    model: gpt-5.5
-    reasoning_effort: low
-    service_tier: fast
-    timeout: 30
-    scope: once
-    min_confidence: 0.75
-    max_context_chars: 12000
-    auto_approve_max_risk: medium
-    escalate_on_error: true
-    escalate_on_low_confidence: true
-security:
-  redact_secrets: true
-  tirith_enabled: true
-```
-
-The gate uses Hermes' existing Codex OAuth credentials. If that provider has
-not been authenticated yet, reviewer calls safely escalate to the normal human
-approval. The `hermes auth add openai-codex --type oauth` step under Configure
-Hermes authenticates it before model selection, avoiding a duplicate device
-flow when inference also uses the ChatGPT/Codex subscription.
-
-Hermes resolves the saved credentials on demand; no Supervisor restart is
-needed after this authentication step.
-
-Do not change `HERMES_BOX_HERMES_COMMIT` casually. Port the patch against the
-new revision and rerun its regression suite before updating the pin.
-
-## Configure Codex
-
-Codex `0.141.0` is installed from its official standalone release archive,
-verified by SHA-256, including the interactive TUI. Its persistent standalone
-layout remains compatible with `codex update`. Open the box and sign in using
-the device flow:
-
-```bash
-./bin/hermes-box ssh
-codex login --device-auth
-codex
-```
-
-Codex defaults to `approval_policy = "never"` and
-`sandbox_mode = "danger-full-access"`. This is the persistent equivalent of
-`--yolo`: Codex can autonomously read, write, execute, and use the network
-inside the VM, while the Hermes Box boundary still isolates it from the host.
-The default `/workspace/work` directory is pre-trusted. The `hermes` account
-has passwordless full `sudo` inside the VM; the smolvm boundary protects the
-host rather than restricting the agent within its box.
-
-Codex's executable, login cache, configuration, sessions, and update metadata
-live under `/workspace/codex-home`, so snapshots preserve them together. Update
-the standalone installation as the `hermes` user:
-
-```bash
-codex update
-codex --version
-```
-
-Interactive SSH already runs inside the persistent `main` session. From any
-Hermes shell, create or return to that exact session with:
-
-```bash
-tm
-codex
-```
-
-Detach with `Ctrl-b`, then `d`. The SSH connection exits after a normal detach;
-the next `./bin/hermes-box ssh` reattaches. The dark-green status bar supports
-mouse clicks for window selection. With the keyboard, use `Ctrl-b n` and
-`Ctrl-b p` for the next and previous windows, or `Ctrl-b` followed by a window
-number. Ghostty metadata, true color, clipboard escape sequences, focus events,
-and extended keys are passed through; tmux 3.5 and newer uses CSI-u so
-`Shift+Enter` remains distinct in TUIs such as Codex.
-
-The login cache is stored as `/workspace/codex-home/auth.json`. Treat snapshots
-and portable packages as credentials after signing in.
-
-## Optional Executor Gateway
-
-Hermes Box can run a digest-pinned
-[Executor](https://github.com/RhysSullivan/executor) service inside the VM.
-Enable it before `init`:
-
-```dotenv
-HERMES_BOX_EXECUTOR_ENABLED=true
-HERMES_BOX_EXECUTOR_PORT=4788
-```
-
-Put those assignments in `hermes-box.conf` (or export them in the shell that
-runs `init`).
-
-After the box starts, open the portal:
-
-```bash
-./bin/hermes-box executor open
-```
-
-Executor's UI and MCP endpoint share that loopback-only port. In the portal,
-create the first admin account, configure the provider integrations and OAuth
-connections you need, then create a destination-local API key. Follow
-[EXECUTOR_CONNECTIONS.md](EXECUTOR_CONNECTIONS.md) for provider prerequisites.
-Store the API key in the per-machine macOS Keychain entry; it is prompted for
-securely and is never passed as a command-line argument:
-
-```bash
-./bin/hermes-box executor auth set
-```
-
-The host CLI can inspect the service without exposing secrets. These are most
-useful for diagnosis after setup:
-
-```bash
-./bin/hermes-box executor status
-./bin/hermes-box executor status --sizes
-./bin/hermes-box executor logs -f
-./bin/hermes-box executor connections
-./bin/hermes-box executor tools
-./bin/hermes-box executor mcp-test
-```
-
-The default `executor status` is intentionally fast and skips recursive runtime
-and data-directory size scans. Add `--sizes` only when you need that disk-usage
-detail.
-
-Connection creation, OAuth, and policy changes intentionally stay in the web
-portal. This makes browser-based setup through Computer Use straightforward:
-open the portal with the CLI, create the connection, follow the provider's OAuth
-flow in the same browser session, and use the exact callback URL displayed by
-Executor. For Google testing, a localhost HTTP redirect is appropriate, but the
-OAuth client's authorized redirect URI must exactly match Executor's displayed
-value. Confirm the result afterward with `executor connections` and
-`executor tools`. See [EXECUTOR_CONNECTIONS.md](EXECUTOR_CONNECTIONS.md) for
-provider-dashboard credential retrieval, secret handoff, policy, and validation
-steps for Google, YouTube, X, Discord, Airtable, GitHub, and Notion.
-
-After creating the needed portal integrations, register the in-VM endpoint
-with Hermes:
-
-```bash
-./bin/hermes-box executor connect-hermes
-```
-
-This validates from inside the guest that the MCP server exposes only `execute`
-and `resume` before changing Hermes' persistent configuration. It then writes
-the bearer-token reference, copies the normalized token into
-`/workspace/hermes-home/.env` over SSH stdin, runs `hermes mcp test executor`,
-and restarts the supervised Hermes gateway. The token therefore exists in both
-the host Keychain and Hermes' guest credential store, both scoped to this box.
-Start a new Hermes CLI session after the command returns so it discovers the
-new MCP tools.
-
-Hermes Box does not run nested Docker. On first boot, `skopeo` copies the
-digest-pinned ARM64 image and a constrained extractor installs its application
-plus bundled Bun runtime under disposable
-`/workspace/.hermes-box-runtime/executor`.
-Supervisor then runs the published self-host payload natively before Hermes.
-Executor's database and generated secret keys live under
-`/workspace/executor/data`, so normal snapshots preserve them while excluding
-the repullable 2.5 GB runtime. The service keeps
-`EXECUTOR_ALLOW_LOCAL_NETWORK=false`; smolvm remains the only host port
-publisher.
-
-The Executor launcher also sets
-`BUN_FEATURE_FLAG_DISABLE_IPV6=1`. smolvm 1.0.4 can present a default IPv6
-route even when external IPv6 traffic is blackholed, and Bun 1.3.14's HTTP
-client may wait on that path instead of falling back to working IPv4. The flag
-is scoped to Executor and keeps its Google, YouTube, and Notion requests on the
-working IPv4 path. Remove it only after the pinned Bun runtime has been proven
-to fall back correctly in this topology.
-
-Image layers are verified by SHA-256, rejected if they contain unsafe paths,
-and applied with OCI whiteout handling. Downloads and extractions are prepared
-away from the active runtime, and interrupted work is never activated; the
-completed runtime is selected with an atomic symlink update. An
-Executor-enabled startup has a
-two-hour outer safety bound, while the image pull itself stops after ten
-minutes without writing OCI data instead of discarding an actively downloading
-large layer at a shorter fixed deadline. A retry reuses completed verified
-blobs; partially transferred blob bytes are not resumable.
-
-Executor provides account and tool policy enforcement, but it is not a
-credential-isolation boundary: the `hermes` user has passwordless root inside
-the same VM. Use a separate machine if Executor credentials must be hidden from
-Hermes itself.
-
-## Daily Commands
-
-Run these from the repository root:
-
-```bash
-./bin/hermes-box start
-./bin/hermes-box stop
-./bin/hermes-box ssh
-./bin/hermes-box logs -f
-./bin/hermes-box package configured-agent
-```
-
-Use `status` for a health summary and `shell` for the host-controlled root
-console when SSH is unavailable:
-
-```bash
-./bin/hermes-box status
-./bin/hermes-box shell
-```
-
-Run a noninteractive command as Hermes:
-
-```bash
-./bin/hermes-box ssh 'sudo -iu hermes hermes status'
-```
-
-Display the advanced restore, snapshot, restart, and Executor commands:
-
-```bash
-./bin/hermes-box help
-```
-
-## Snapshots
-
-Create a consistent snapshot:
-
-```bash
-./bin/hermes-box snapshot configured-and-working
-```
-
-The wrapper:
-
-1. Stops supervised services.
-2. Archives the merged root filesystem.
-3. Archives `/workspace`.
-4. Rejects snapshots containing tar warnings.
-5. Records the stable SSH-key fingerprint and writes SHA-256 checksums.
-6. Restarts the machine if it was previously running.
-
-Snapshots are stored under `backups/*.hermesbox`.
-A completed snapshot is retained and its path is reported if restarting the
-machine afterward fails.
-
-Restore:
-
-```bash
-./bin/hermes-box restore \
-  backups/hermes-box-YYYYMMDD-HHMMSS-configured-and-working.hermesbox
-```
-
-When the target machine does not exist, restore creates it directly and runs
-the complete health verification once. When replacing an existing machine,
-restore first takes a safety snapshot and validates a temporary candidate on a
-random loopback port; it replaces the primary only after that candidate passes.
-
-Keep `images/hermes-base.smolmachine` with your backups. Restore requires it.
-
-## Portable Backups
-
-Create a self-contained portable archive:
-
-```bash
-./bin/hermes-box package configured-agent
-```
-
-Convert an already completed snapshot without starting its machine:
-
-```bash
-./bin/hermes-box package --snapshot backups/existing.hermesbox configured-agent
-```
-
-`package` takes a fresh consistent snapshot, then bundles:
-
-- An archive-specific `AGENTS.md` with expand, restore, and run instructions
-- The runnable Hermes Box project
-- `images/hermes-base.smolmachine`
-- The new `backups/*.hermesbox` snapshot
-- A portable `hermes-box.conf` using repository-local data directories
-
-For Executor-enabled boxes, the generated configuration preserves whether
-Executor is enabled, its loopback port, and the exact digest-pinned image.
-Executor's database, integrations, policies, OAuth tokens, API credentials,
-and Hermes MCP token are carried inside the `/workspace` snapshot.
-
-It writes both files under `backups/`:
-
-```text
-hermes-box-portable-YYYYMMDD-HHMMSS-configured-agent.tar
-hermes-box-portable-YYYYMMDD-HHMMSS-configured-agent.tar.sha256
-```
-
-Portable archives intentionally exclude the SSH private and public keys. Keep
-one stable private key per box in an encrypted secret store such as 1Password;
-the same key restores every archive made by that box. The archives may still
-include Hermes OAuth tokens, API keys, sessions, memories, and generated work,
-so encrypt them at rest too.
-
-The source Mac's Keychain entries and browser sessions are not included. The
-repullable Executor runtime under `/workspace/.hermes-box-runtime` is also
-excluded, so the destination needs outbound network access on first start to
-fetch the pinned runtime again. After restore, add a destination-local Executor
-API key with
-`./bin/hermes-box executor auth set` if host-side management commands are
-needed; Hermes' in-guest Executor connection is restored from the snapshot.
-
-On another compatible host, install the prerequisites and restore without
-reconfiguring Hermes:
-
-```bash
-shasum -a 256 -c hermes-box-portable-*.tar.sha256
-tar -xpf hermes-box-portable-*.tar
-cd hermes-box
-printf '\nHERMES_BOX_SSH_KEY=%s\n' /secure/path/hermes-box-ed25519 >>hermes-box.conf
-./bin/hermes-box restore backups/*.hermesbox
-./bin/hermes-box status
-```
-
-For an Executor-enabled archive, also verify the restored service and in-guest
-connection:
-
-```bash
-./bin/hermes-box executor status
-./bin/hermes-box ssh \
-  'sudo -iu hermes env HERMES_HOME=/workspace/hermes-home hermes mcp test executor'
-```
-
-The packaged `AGENTS.md` contains this recovery sequence and links back to the
-[Hermes Box repository](https://github.com/davis7dotsh/hermes-box) for the
-latest documentation and troubleshooting guidance.
-
-Host environment variables referenced by an optional `secret-env.txt` must
-still exist on the restore host. See [PORTABLE_RESTORE.md](PORTABLE_RESTORE.md).
-
-## Networking
-
-`HERMES_BOX_NETWORK_MODE` accepts:
-
-- `full`: unrestricted outbound networking
-- `none`: rejected on smolvm 1.0.4
-- `strict`: rejected on smolvm 1.0.4
-
-Live testing found that smolvm 1.0.4 hostname allowlists could be bypassed by
-direct-IP or unlisted-host traffic, and its no-network options still allowed
-external HTTPS. Hermes Box therefore fails closed instead of presenting those
-settings as meaningful containment.
-
-Use `full` only when unrestricted VM egress is acceptable.
+The VM root is replaceable. All durable guest state lives on the data disk.
+Software versions and verified download inputs live in the reviewed
+`hermes-box.lock`. `start` never updates anything; `update` applies application
+pins from that lock, and `rebuild` replaces the root for platform changes.
+
+There is one security boundary: the VM protects the host. The `agent` user has
+passwordless sudo inside the VM, so Claude, Codex, Hermes, and Executor are not
+isolated from each other.
+
+## Host requirements
+
+- Apple Silicon Mac
+- Go 1.24 or newer
+- Lima 2.1.3, the currently qualified host runtime
+- `ssh`
+
+Optional contributor tools are `shellcheck` and `tmux`. The repository has no
+Node or Python dependency installation step.
+
+The initial platform qualification targets Lima 2.1.3 and the official Ubuntu
+26.04 ARM64 cloud-image build dated 20260612. Their exact artifact URLs and
+checksums belong in `hermes-box.lock`, not in runtime code.
 
 ## Configuration
 
-Copy `hermes-box.conf.example` to `hermes-box.conf` and adjust:
+One configuration directory owns exactly one box. Its two inputs are safe to
+commit:
 
-```bash
-HERMES_BOX_MACHINE_NAME=hermes-box
-HERMES_BOX_BUILDER_NAME=hermes-builder
-HERMES_BOX_SSH_PORT=2222
-HERMES_BOX_CPUS=4
-HERMES_BOX_MEMORY_MIB=8192
-HERMES_BOX_STORAGE_GB=15
-HERMES_BOX_OVERLAY_GB=6
-HERMES_BOX_NETWORK_MODE=full
-HERMES_BOX_SSH_KEY=/secure/path/hermes-box-ed25519
-HERMES_BOX_HERMES_COMMIT=2bd1977d8fad185c9b4be47884f7e87f1add0ce3
-HERMES_BOX_EXECUTOR_ENABLED=false
-HERMES_BOX_EXECUTOR_PORT=4788
+- `hermes-box.yaml`: human choices such as box name, CPUs, memory, disks, port,
+  and backup retention.
+- `hermes-box.lock`: reviewed Ubuntu, provisioner, tool, application, and
+  container pins with checksums or digests.
+
+The configuration file is selected by `--config`, then `HERMES_BOX_CONFIG`,
+then `./hermes-box.yaml`. Host state is selected by `HERMES_BOX_HOME`, then
+`~/.hermes-box`.
+
+Example configuration:
+
+```yaml
+schema: 1
+name: main
+
+vm:
+  cpus: 4
+  memory: 8GiB
+  root_disk: 30GiB
+  data_disk: 50GiB
+
+ports:
+  executor: 4788
+
+backup:
+  keep: 5
 ```
 
-`HERMES_BOX_EXECUTOR_IMAGE` defaults to the reviewed v1.5.16 multi-platform OCI
-image pinned by digest. Overrides are accepted only when they also contain an
-explicit tag and full SHA-256 digest. The guest always resolves and verifies
-the Linux ARM64 child image.
+The lock is input-only. Runtime commands never edit it. Version changes belong
+in a normal reviewed pull request before they are applied to a box.
 
-Explicit `HERMES_BOX_*` environment variables override the config file. This
-makes disposable test machines safe to run with different names and ports.
-Configuration files are parsed as assignments rather than executed as shell
-code. Plain, single-quoted, double-quoted, and optional `export` assignments are
-supported. Unknown `HERMES_BOX_*` names are rejected so a typo cannot silently
-change a security or runtime setting. Host-variable names explicitly referenced
-by `secret-env.txt` are allowed, and unrelated assignments are ignored.
+## Create a box
 
-Set `HERMES_BOX_DATA_DIR` to keep `images/`, `backups/`, and `state/` under a
-different directory. The disposable lifecycle suite uses a temporary data
-directory so it cannot replace primary recovery artifacts.
-
-Set `HERMES_BOX_SSH_KEY` to the separately stored stable private key for the
-box. Hermes Box derives its public key automatically. An explicitly configured
-key is never generated or replaced when missing, and portable archives never
-contain either key file.
-
-Optional smolvm host-secret mappings can be placed in `secret-env.txt`; use
-`secret-env.txt.example` as the template. Every referenced host variable must
-be set to a nonempty value before `init` or restore creates a VM.
-
-## Testing
-
-Run static and syntax checks:
+From a checkout containing the reviewed config and lock:
 
 ```bash
-./tests/static.sh
+./bin/hermes-box create
 ```
 
-Run the complete local check suite:
+`create` verifies all inputs first, creates a separately named Lima data disk,
+boots a fresh Ubuntu root, applies the lock, starts systemd services, runs
+health checks, and creates the first encrypted backup.
+
+It then prints the human authentication handoff:
+
+```text
+hermes-box ssh
+claude
+codex login --device-auth
+hermes auth add openai-codex --type oauth
+hermes model
+hermes-box open executor
+hermes-box setup executor
+hermes-box key export /secure/path/main-age-key.txt
+hermes-box backup configured
+```
+
+Browser grants, device codes, account creation, OAuth consent, and backup-key
+storage remain human actions.
+
+## Interactive shell
+
+```bash
+./bin/hermes-box ssh
+```
+
+SSH opens `/workspace` as `agent` and automatically creates or attaches the
+tmux session named `main`. Inside the guest, `tm` always returns to that same
+session.
+
+The shared tmux setup has a dark-green bottom bar with white text, clickable
+windows, true color, focus events, clipboard passthrough, Ghostty metadata, and
+extended-key support so `Shift+Enter` remains distinct in TUIs such as Codex.
+
+Detach with `Ctrl-b d`; the next SSH connection reattaches.
+
+## Commands
+
+```text
+create                                      Create and verify a new box
+start                                       Start applied versions; never update
+stop                                        Stop services, sync data, and stop VM
+ssh                                         Attach the main interactive tmux session
+exec -- COMMAND [ARGS...]                   Run a command without tmux
+status [--check]                            Show health, drift, setup, and backups
+logs [hermes|executor|recovery] [-f] [-n N] Read bounded service logs
+open executor                               Open the loopback-only Executor portal
+setup executor [--token-stdin]              Connect Executor to Hermes safely
+update COMPONENT|all                        Apply reviewed application lock drift
+rollback COMPONENT                          Activate the one retained prior release
+backup [LABEL]                              Create an encrypted recovery bundle
+restore BACKUP --identity PATH [--lock P]   Restore into an absent destination
+rebuild                                     Replace root and retain the data disk
+doctor                                      Run bounded read-only diagnostics
+key export PATH                             Export the age backup identity
+destroy [--force]                           Back up, then remove VM and data disk
+completion [bash|zsh|fish]                  Print shell completion
+version                                     Print CLI and schema versions
+help [COMMAND]                              Show help
+```
+
+Global flags are `--config PATH`, `--json`, `--quiet`, `--no-color`, and
+`--help`. Progress goes to stderr. Supported `--json` commands emit exactly one
+schema-versioned object on stdout.
+
+## Updates
+
+Application updates are explicit:
+
+```bash
+./bin/hermes-box status --check
+# Change hermes-box.lock on a branch and merge it after review.
+./bin/hermes-box update codex
+./bin/hermes-box update all
+```
+
+Supported components are `node`, `uv`, `claude`, `codex`, `hermes`, and
+`executor`. Each update stages and checks the candidate before activation,
+keeps one previous release, snapshots component-owned durable state, and rolls
+back the candidate on failed health checks.
+
+Ubuntu, the guest provisioner, and Lima compatibility are platform entries.
+After their reviewed lock change, use:
+
+```bash
+./bin/hermes-box rebuild
+```
+
+`rebuild` verifies a recovery backup, creates a fresh root, reattaches the same
+data disk, and reapplies the lock. There is no in-place OS upgrade.
+
+## Backup and restore
+
+```bash
+./bin/hermes-box backup configured
+./bin/hermes-box key export /secure/path/main-age-key.txt
+```
+
+Backups are age-encrypted and include the persistent data disk, the applied
+lock, the Ubuntu image, and every exact install input required to reconstruct
+that applied root. They do not contain a root filesystem or a Lima binary.
+
+Store the exported identity separately; it decrypts every backup for that box.
+Restore always targets an absent box and never replaces one in place:
+
+```bash
+./bin/hermes-box \
+  --config /path/to/destination/hermes-box.yaml \
+  restore /path/to/backup.tar.zst.age \
+  --identity /secure/path/main-age-key.txt
+```
+
+See [PORTABLE_RESTORE.md](PORTABLE_RESTORE.md) for the short recovery runbook.
+
+## Security boundaries
+
+Hermes Box provides:
+
+- no host directory, SSH-agent, Docker socket, GPU, or credential-store mount;
+- Lima-managed SSH instead of a project-owned long-lived SSH key;
+- loopback-only host exposure for Executor;
+- checksum- or digest-verified Ubuntu and component inputs;
+- encrypted backups and reviewed immutable pins; and
+- host control to stop or replace the VM when guest SSH is broken.
+
+It does not provide strict/offline networking, guest process isolation, or an
+out-of-band root repair console. If boot, SSH, or the data mount is broken,
+`doctor` reports host-visible evidence and recovery uses `rebuild`.
+
+## Executor
+
+Executor runs as a digest-pinned Linux ARM64 container under system Podman.
+Only `/data/executor` is persistent; the Podman image store stays on the
+disposable root. Open the portal and finish account/integration setup, then
+register its reviewed MCP surface with Hermes:
+
+```bash
+./bin/hermes-box open executor
+./bin/hermes-box setup executor
+```
+
+The token is read from a no-echo prompt or stdin, never a command argument.
+See [EXECUTOR_CONNECTIONS.md](EXECUTOR_CONNECTIONS.md) for the provider setup
+boundary and validation checklist.
+
+## Contributor checks
+
+Routine checks are safe and do not create or operate a VM:
 
 ```bash
 make check
 ```
 
-Run a disposable lifecycle test:
+This runs Go formatting checks, `go vet`, race-enabled tests, Bash syntax,
+ShellCheck when installed, sudoers validation when available, and tmux contract
+checks.
+
+The destructive lifecycle harness is opt-in, creates its own config directory,
+`HERMES_BOX_HOME`, and `LIMA_HOME`, rejects the primary name and port, and is
+never run by `make check` or CI:
 
 ```bash
-HERMES_BOX_E2E=1 \
-HERMES_BOX_MACHINE_NAME=hermes-box-test \
-HERMES_BOX_BUILDER_NAME=hermes-builder-test \
-HERMES_BOX_SSH_PORT=2223 \
-HERMES_BOX_EXECUTOR_ENABLED=true \
-HERMES_BOX_EXECUTOR_PORT=4789 \
-./tests/lifecycle.sh
+HERMES_BOX_E2E=1 ./tests/lifecycle.sh
 ```
 
-Never reuse the primary machine name, builder name, SSH port, or Executor port
-for destructive tests. The script creates and removes its own isolated data
-directory.
+Read [AGENTS.md](AGENTS.md) before operating it.
 
-## Project Layout
+The ARM64 release-artifact workflow has two phases. Pull requests build the
+static guest helper, provisioner package set, gated Hermes source, offline
+Hermes wheels, checksums, and a candidate lock without publishing anything.
+The isolated lifecycle harness accepts explicit baseline and candidate locks
+plus both repository-owned artifact directories, verifies and seeds its own
+temporary artifact cache, and therefore does not require future release URLs
+to exist. The two locks must differ for all six managed components; the harness
+updates and rolls back each one before applying the complete candidate.
+
+After that candidate passes review and the isolated matrix, pushing the one-use
+`v2.0.0-assets` tag rebuilds, attests, and publishes the immutable inputs. The
+exact published URLs are downloaded and the lifecycle runs again from those
+bytes. Only then is the generated `hermes-box.lock` promoted to the repository
+root in a final reviewed change. Until that promotion, the missing root lock is
+intentional and normal operator `create` remains unavailable. See
+[release/README.md](release/README.md) for the executable runbook.
+
+## Structure
 
 ```text
-hermes-box/
-├── bin/hermes-box
-├── cmd/hermes-box/
-├── internal/
-│   ├── app/
-│   ├── config/
-│   └── process/
-├── guest/
-│   ├── bootstrap.sh          Installs Hermes and seeds persistent state
-│   ├── boxadmin.bash_profile
-│   ├── hermes-box.sudoers    Grants the agent full passwordless sudo
-│   ├── executor.sh           Installs and runs the pinned Executor payload
-│   ├── extract-executor.py   Safely applies the selected OCI image layers
-│   ├── hermes_gated_approval.py  Conservative one-shot reviewer module
-│   ├── patch-hermes-gated-approval.py  Strict pinned-source installer
-│   ├── install-node.sh       Installs the latest checksum-verified Node 24 LTS
-│   ├── restore.sh
-│   ├── snapshot.sh
-│   ├── start.sh              Installs Codex once, then starts services
-│   ├── supervisord.conf
-│   ├── tm                    Creates or attaches the exact `main` session
-│   ├── tmux.conf             Shared terminal behavior and status styling
-│   └── workspace-seed.sh
-├── tests/
-├── Makefile
-├── Smolfile
-├── hermes-box.conf.example
-├── network-hosts.txt
-├── secret-env.txt.example
-├── images/
-├── backups/
-└── state/
+cmd/hermes-box/          Host CLI
+cmd/hermes-box-guest/    Static Linux ARM64 guest transaction helper
+internal/                Config, Lima, artifacts, updates, backup, and state
+guest/                   Cloud-init, systemd units, tmux, and bootstrap assets
+tests/                   Safe static checks and isolated lifecycle harness
+docs/HERMES_BOX_V2_SPEC.md
 ```
 
-The Hermes browser and Node-based Hermes TUI payloads are intentionally removed
-from the base image to keep smolvm pack and restore operations reliable. The
-native Codex TUI is installed into the persistent workspace on first boot.
-Hermes CLI, inference, skills, messaging, gateway, and web-search tooling remain
-available.
-
-The Go CLI preserves the `hermes-box-v2` backup format and can restore snapshots
-created by the original Bash host wrapper.
+The complete API, JSON schema, state model, and implementation contract are in
+[docs/HERMES_BOX_V2_SPEC.md](docs/HERMES_BOX_V2_SPEC.md).

@@ -1,213 +1,262 @@
-# Hermes Box component playbooks
+# Hermes Box v2 component playbooks
 
-Use only the sections for the requested component. Rediscover current versions
-and paths on every run; the examples below describe stable seams, not permanent
-version numbers.
+Read this reference completely, then apply only the selected component
+sections. Rediscover all current values on each run; filenames below identify
+stable seams, not permanent versions.
 
 ## Contents
 
-1. Hermes Agent
-2. smolvm
-3. uv
-4. Ubuntu base image
-5. Codex
-6. Executor
-7. Node.js
+1. Shared release and transaction contracts
+2. Hermes Agent
+3. Lima, Ubuntu, and the guest provisioner
+4. uv, Node.js, and Hermes Python
+5. Claude Code
+6. Codex
+7. Executor
 8. Go and CI actions
-9. Suggested PR boundaries and estimates
+9. PR boundaries
 
-## 1. Hermes Agent
+## 1. Shared release and transaction contracts
 
-Hermes is not a simple version-string bump. Hermes Box patches a reviewed
-upstream commit to add the `gated` approval mode.
+The reviewed update chain is:
+
+```text
+official immutable input
+  -> release/pins.env
+  -> qualification.lock.template
+  -> reproducible repository-owned artifacts
+  -> published immutable URLs and attestations
+  -> generated candidate lock
+  -> isolated Lima lifecycle proof
+  -> reviewed root hermes-box.lock
+  -> explicit update or rebuild
+```
+
+Runtime commands never discover, select, or write versions. Application drift
+is applied with `hermes-box update COMPONENT|all`. Ubuntu, provisioner,
+foundational package, and Lima-compatibility drift is applied by `rebuild`.
+
+The host materializes exact lock inputs in its content-addressed cache and
+uploads them. The static guest helper owns install, smoke, atomic activation,
+health, rollback, and crash recovery. Preserve that boundary.
+
+Before a noninitial update, the host creates an age-encrypted component snapshot
+using the fixed scope in `internal/component/component.go`. Guest backup streaming
+stops affected services, freezes the active `agent` user slice when taking a
+full backup, freezes `/data`, streams the archive, then thaws the filesystem,
+user slice, and previously running services on every exit path. Component
+snapshots reject active Claude or Codex processes rather than freezing the
+whole user slice. Do not replace this with destructive session termination.
+
+Every full recovery backup embeds the applied lock plus the exact Ubuntu,
+provisioner, Node, uv, Claude, Codex, gated Hermes source, Python, Hermes wheel,
+and Executor OCI inputs. Any lock-schema or artifact change must update and test
+that closure.
+
+## 2. Hermes Agent
+
+Hermes is a coupled four-input release:
+
+- exact upstream commit and source checksum;
+- deterministic gated source artifact owned by this repository;
+- exact Python standalone archive;
+- complete Linux ARM64 wheel closure for the reviewed `uv.lock`.
 
 ### Discovery
 
-1. Resolve the latest stable Hermes release tag to its exact commit.
-2. Compare the current configured commit to the candidate.
-3. Verify the candidate `scripts/install.sh` SHA-256.
-4. Confirm the required Python range and installer-managed Python version.
-5. Confirm every extra installed by `guest/bootstrap.sh` still exists.
+1. Resolve the stable tag to its exact commit and archive checksum.
+2. Compare `pyproject.toml`, `uv.lock`, approval flow, gateway startup,
+   messaging imports, and MCP configuration from the current commit.
+3. Confirm the selected Python version satisfies the project range.
+4. Verify every dependency has a compatible hashed Linux ARM64 wheel.
+5. Review whether the local gated-approval contract is now upstream. Do not
+   silently retain two competing implementations.
 
-### Rehearsal
+### Release construction
 
-Clone the candidate into `/tmp`. Compare at least:
+`release/build-hermes-source.sh` fetches the exact commit, verifies `uv.lock`,
+applies the fail-closed patch in `release/hermes/`, runs the approval regression
+suite, removes Git metadata, and creates a deterministic source archive.
 
-- `tools/approval.py`
-- `gateway/run.py`
-- `agent/auxiliary_client.py`
-- `scripts/install.sh`
-- `pyproject.toml`
-- `uv.lock`
+`release/build-hermes-wheels.sh` exports locked `all` dependencies, downloads
+only hashed binary wheels against the pinned standalone Python, creates a
+manifest, and proves `uv sync --locked --offline --no-index` plus gated approval
+and `hermes --help` before packaging the wheelhouse.
 
-Run each current patch function against a disposable copy of the matching new
-upstream file. Every anchor must match exactly once. Passing anchors are only a
-starting point: review the surrounding new semantics for duplicated or
-conflicting approval logic.
+Provisioning never patches source. The guest trusts only the already reviewed
+gated source artifact, verifies its archive and `uv.lock`, creates a relocatable
+venv with the pinned uv and Python, performs an offline sync, compiles the
+source, reruns approval tests, and only then exposes `bin/hermes`.
 
-### Repository changes
+### Patch surface and proof
 
 Usually update:
 
-- `guest/patch-hermes-gated-approval.py` expected commit and version.
-- `guest/bootstrap.sh` supported commit, installer digest when changed,
-  comments, extras, and post-install assertions.
-- `internal/config/config.go` default commit.
-- `hermes-box.conf.example`, README, and static/config tests.
-- Gated-approval unit and patched-upstream integration tests when upstream
-  control flow changed.
+- `release/pins.env` and `release/qualification.lock.template`;
+- `release/hermes/` patcher, module, and tests;
+- deterministic artifact names in release scripts/workflow/validator;
+- lock/config fixtures, guest installer expectations, backup closure, and docs.
 
-### Proof
+Prove exact patch anchors, approve/deny/escalate/hardline precedence, context
+cleanup, service-tier forwarding, offline install, messaging imports, temporary
+gateway health, update rollback of `/data/home/agent/.hermes`, and rebuild from
+the self-contained backup. Reject any ambiguous patch or incomplete wheel
+closure.
 
-- Compile all patched upstream modules.
-- Run `tests/hermes-gated-approval.py` against the patched candidate source.
-- Prove approve, deny, escalate, hardline precedence, context cleanup, and
-  Responses API service-tier forwarding.
-- Run a fresh isolated image build and verify `hermes --version`.
-- Verify Discord/messaging imports and the Supervisor gateway.
-- Exercise one real human-escalation path and one model-gated path when
-  credentials are available and the user authorizes it.
+## 3. Lima, Ubuntu, and the guest provisioner
 
-Reject the candidate if patch semantics cannot be proven fail-closed.
+Lima is a manually installed host prerequisite. The lock records the qualified
+version; Hermes Box verifies it but never upgrades it. Ubuntu is an exact dated
+official ARM64 cloud image. Platform changes are always `rebuild`, never
+in-place mutation.
 
-## 2. smolvm
-
-smolvm owns VM boot, OCI extraction, networking, persistent disks, packing,
-and machine state. Treat even a minor release as a runtime migration.
+The separately named `<box>-data` Lima disk is durable. The VM and root disk are
+replaceable. Preserve exact resource ownership and never discover destructive
+targets by prefix.
 
 ### Discovery
 
-1. Download the official Darwin ARM64 release and checksums to `/tmp`.
-2. Verify the archive checksum before executing the candidate binary.
-3. Compare `--version` and help for every command Hermes Box calls:
-   `machine create`, `update`, `start`, `stop`, `exec`, `cp`, `status`,
-   `data-dir`, `delete`, and `pack create`.
-4. Compare upstream changes touching OCI extraction, ownership, whiteouts,
-   networking, storage, overlay mounts, pruning, and pack caches.
-5. Search the repo for every old-version string and workaround.
+For Lima, compare every used command and YAML contract: version, VM create,
+start/stop/delete, shell/copy/inspect, disk create/attach/delete, Apple VZ,
+mounts, and loopback forwarding. Verify the official Darwin ARM64 archive and
+checksum.
 
-### Repository changes
+For Ubuntu, verify the dated ARM64 cloud image checksum and boot compatibility.
+Review OpenSSH, systemd, tmux/ncurses, Podman, util-linux/fsfreeze, sudo, archive
+tools, certificates, and package renames.
 
-Update the exact-version preflight, download guidance, docs, backup fixtures,
-host tests, and any error messages. Reassess but do not automatically remove:
+For the provisioner, update `release/provisioner-packages.in`; resolve the exact
+`.deb` closure only inside the pinned Ubuntu 26.04 ARM64 OCI child; and rebuild
+the deterministic archive containing the static guest helper, bootstrap,
+systemd units, sudoers, tmux assets, package manifest, and checksums.
 
-- Builder `machine update --net` reapplication.
-- Network-mode fail-closed errors.
-- Pack extraction-cache sizing and marker verification.
-- Root ownership repair after packing.
-- Workspace seed and persistent-disk workarounds.
+### Proof
 
-### Proof matrix
+Prove fresh create, data-disk persistence, no host mounts/agent/socket
+forwarding, loopback-only Executor, clean stop/start cycles, full backup, root
+rebuild, automatic recovery from desired-root failure using the captured prior
+applied lock and artifacts, and cleanup of only isolated resources.
 
-Use only isolated resources. Prove:
+Do not claim existing roots changed after a platform pin edit. The operator must
+install a newly qualified Lima binary first when needed, then run `rebuild`.
 
-- Fresh lean and Executor-enabled lifecycle runs.
-- Ubuntu base pull, provisioning, pack, first boot, and restart.
-- Root/file ownership and sudo integrity.
-- OCI whiteouts and Executor extraction.
-- Snapshot, candidate restore, rollback, and portable restore.
-- Compatibility with machine state created by the old smolvm version using a
-  disposable copy, never the primary machine.
-- Pack-cache reuse and cleanup.
-- Loopback-only SSH/Executor port publication.
+## 4. uv, Node.js, and Hermes Python
 
-Re-run the direct-IP, unlisted-host, `--no-net`, localhost-only, and hostname
-allowlist probes before changing any network containment claim. Keep modes
-disabled if the candidate still bypasses them.
+Node and uv are versioned root tooling. Claude depends on Node; Hermes depends
+on Node and uv. A tooling update is healthy only when its dependents pass.
 
-## 3. uv
+### Node
 
-The code change is small; qualification is the work. Hermes Box pins uv because
-a newer candidate previously deadlocked while building Hermes in smolvm.
+Pin an exact patch release and official Linux ARM64 archive checksum. Do not use
+`latest-v<major>.x`. Prove archive layout, `node`, `npm`, `npx`, and `corepack`,
+offline Claude tarball installation, Hermes health, and rollback with snapshots
+of both `.claude` and `.hermes`.
 
-### Discovery and update
+### uv
 
-1. Read every release note from the current pin through the candidate.
-2. Look specifically for resolver, editable install, Python selection,
-   concurrency, filesystem, and lockfile changes.
-3. Download the ARM64 GNU/Linux archive and `.sha256` from the official release.
-4. Verify the checksum and artifact attestation when available.
-5. Update `uv_version`, `uv_archive_sha256`, matching docs, and static tests.
+Pin the official `aarch64-unknown-linux-gnu` archive and checksum. Read all
+release notes from the current pin, especially resolver, lock, offline,
+relocatable-venv, Python selection, concurrency, and filesystem changes.
 
-### Bounded proof
+Reproduce the exact guest Hermes path under a hard timeout:
 
-Run the same Hermes installer stages and locked `uv sync` command used by
-`guest/bootstrap.sh` under a hard timeout. Prove:
+```text
+uv venv --relocatable --python <pinned-python> <venv>
+uv sync --project <gated-source> --extra all --locked --offline --no-managed-python
+```
 
-1. Cold builder with empty caches.
-2. Second builder or retry with populated caches.
-3. Lean install and messaging/`all` extras.
-4. Correct managed Python and venv ownership.
-5. No stuck uv/build processes after timeout or failure.
+Run cold and cache/retry cases, verify no stuck processes, run approval tests
+and gateway health, and prove rollback of `.hermes`. Retain the current pin if
+the candidate hangs or mutates the lock.
 
-If the candidate hangs, capture process state and retain the known-good pin.
-Release notes that do not mention the deadlock are not evidence of a fix.
+### Python
 
-## 4. Ubuntu base image
+Python is a Hermes input rather than a standalone update target. Verify the
+exact python-build-standalone ARM64 archive, ABI compatibility, wheel closure,
+relocatable venv, and complete offline replay. Update Python, wheel artifact
+naming, release scripts, lock template, and Hermes proof together.
 
-Update both the builder image in Go and the `Smolfile` image. Add a test that
-prevents those values from drifting.
+## 5. Claude Code
 
-Before changing them:
+Claude is installed from an exact official npm tarball using its registry
+SHA-512 SRI. The guest invokes the pinned Node/npm with offline mode,
+`--ignore-scripts`, a versioned prefix, and update/audit/funding notifications
+disabled. It must produce exactly the expected `bin/claude` surface.
 
-- Confirm the official Linux ARM64 OCI manifest exists.
-- Check required package availability and renamed utilities.
-- Review default Python, OpenSSH, sudo, tmux/ncurses, coreutils, and service
-  behavior.
-- Run the full isolated lifecycle because local checks cannot execute guest
-  provisioning.
+Update the version, tarball URL, and SRI together. Prove:
 
-Document that existing machines and archived root filesystems do not upgrade in
-place. A restore preserves the snapshot's OS; creating a new box is the OS
-migration path unless a separately designed migration exists.
+- SRI verification and content-addressed caching;
+- offline trusted installation and `claude --version`;
+- `claude doctor` without clearing authentication;
+- vendor self-update remains nonauthoritative;
+- persisted `/home/agent/.claude` state;
+- interactive-process busy rejection;
+- encrypted `.claude` snapshot restoration on failed update and rollback;
+- tmux extended-key and `Shift+Enter` behavior.
 
-## 5. Codex
+## 6. Codex
 
-Resolve the official release and ARM64 Linux artifact, verify its SHA-256, and
-update the pinned version/digest together. Prove first-boot installation,
-`codex --version`, device-auth persistence, `codex update` compatibility,
-tmux/Shift+Enter behavior, and snapshot restore of `CODEX_HOME`.
+Pin the exact official Linux ARM64 musl bundle and SHA-256. The guest extracts
+it into a versioned release, requires one Codex executable, normalizes it to
+`bin/codex`, and activates it atomically.
 
-## 6. Executor
+Prove `codex --strict-config --version`, `codex --help`, and `codex doctor`;
+device-auth persistence under `CODEX_HOME=/home/agent/.codex`; vendor
+self-update nonauthority; interactive-process busy rejection; encrypted
+`.codex` snapshot restoration; backup/restore; and tmux `Shift+Enter`.
 
-Resolve the release tag to the immutable multi-platform OCI index digest and
-verify its Linux ARM64 child. Update config defaults, tests, docs, and runtime
-manifest expectations together. Prove extraction safety, OCI whiteouts,
-Supervisor health, portal health, persistence under `/workspace/executor/data`,
-MCP `execute`/`resume`, IPv4 fallback behavior, and restore without bundling the
-repullable runtime.
+If the upstream bundle layout or compression changes, update the trusted
+installer and its adversarial archive tests rather than adding a shell fallback.
 
-## 7. Node.js
+## 7. Executor
 
-Decide whether the project intentionally follows `latest-v<major>.x` or pins a
-patch release. Preserve checksum verification and safe archive ownership. Prove
-`node`, `npm`, `npx`, and `corepack` links as both root and Hermes, plus
-snapshot/restore behavior. Do not call a moving patch selector reproducible.
+Pin both the official multi-platform OCI index digest and selected Linux ARM64
+child digest. The host resolves that exact child, exports a verified OCI tar to
+its content-addressed cache, and uploads it. The guest loads it into system
+Podman and writes only the child-digest-qualified runtime reference to the
+systemd environment. The Podman image store remains on disposable root.
+
+Prove:
+
+- index-to-child selection and archive digest validation;
+- system Podman load with `--pull=never`;
+- loopback-only `127.0.0.1:4788` publication;
+- `/data/executor:/data` persistence and portal health;
+- authenticated MCP exposes only reviewed `execute` and `resume` tools;
+- Hermes discovery after `setup executor`;
+- encrypted `/data/executor` snapshot before update;
+- failed-update and explicit rollback restore the pre-update database before
+  starting the previous image;
+- backup/restore does not preserve the disposable Podman store but does embed
+  the exact OCI input.
+
+Never replace the child digest with a mutable tag or treat the index digest as
+proof of the selected runtime bytes.
 
 ## 8. Go and CI actions
 
-Separate the `go.mod` language/toolchain directive from the minimum supported
-host security baseline. Update preflight validation, docs, CI, and tests
-together when raising the host minimum.
+Keep the minimum supported host Go release separate from the exact release
+builder toolchain in `release/pins.env`. A Go update may change both the host CLI
+and static Linux ARM64 guest helper, so rerun deterministic provisioner builds,
+protocol tests, and the isolated lifecycle.
 
-Pin GitHub Actions to reviewed full commit SHAs, keep a human-readable release
-comment, and set `persist-credentials: false` for checkout when the workflow
-does not push.
+Pin GitHub Actions to reviewed full commit SHAs with readable release comments.
+Keep checkout `persist-credentials: false`. Qualification jobs build twice on
+native Linux ARM64; publication jobs alone receive `contents: write`,
+`id-token: write`, and attestation permissions.
 
-## 9. Suggested PR boundaries and estimates
+## 9. PR boundaries
 
-Use estimates only after inspecting the current candidate:
+Prefer separate PRs for independently reversible boundaries:
 
-- **Pin/checksum-only component with stable runtime contract:** a few hours.
-- **Hermes source upgrade with passing patch anchors:** roughly half to one day,
-  dominated by semantic review and lifecycle proof.
-- **Previously failing uv candidate:** roughly half a day if it passes; longer
-  if the hang needs diagnosis.
-- **smolvm runtime upgrade:** roughly one to two days because machine-state,
-  networking, packing, ownership, and restore behavior all require proof.
-- **Several coupled runtime upgrades in one PR:** usually two to three days and
-  harder failure attribution. Prefer staged PRs unless a combined matrix is the
-  explicit goal.
+- one application pin with stable artifact/install contracts;
+- a Hermes commit plus gated source and complete offline wheel closure;
+- Node, uv, or Python when it rebuilds and requalifies Hermes dependencies;
+- Ubuntu, Lima, or provisioner changes requiring root rebuild proof;
+- Go/protocol or recovery-format changes;
+- CI action-only maintenance.
 
-These are engineering ranges, not promises. Increase them when upstream has a
-large semantic diff, a backup migration, or an unresolved lifecycle failure.
+Combine components only when one cannot be qualified without the others. Every
+PR must say whether operators run `update COMPONENT|all` or `rebuild`, which
+encrypted durable scopes are protected, whether recovery format changed, and
+which lifecycle paths were actually exercised.

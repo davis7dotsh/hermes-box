@@ -13,8 +13,6 @@ state_dir=$project_root/state
 binary=$state_dir/hermes-box-go
 temporary_binary=$binary.tmp-$$
 
-export HERMES_BOX_PROJECT_ROOT=$project_root
-
 needs_build=false
 if [[ ! -x $binary ]]; then
   needs_build=true

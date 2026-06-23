@@ -1,0 +1,43 @@
+# This is intentionally not named hermes-box.lock. The three repository-built
+# SHA-256 values are filled only after the release artifacts pass offline
+# qualification. release/render-lock.sh creates the schema-valid lock.
+schema: 1
+host:
+  lima: "2.1.3"
+ubuntu:
+  release: "26.04"
+  image: https://cloud-images.ubuntu.com/releases/26.04/release-20260612/ubuntu-26.04-server-cloudimg-arm64.img
+  sha256: 5e1c212ac29354dbf51c5b1926d8a359de57ca8c2d2bdacf17651129c29791cb
+  provisioner: https://github.com/davis7dotsh/hermes-box/releases/download/__ASSET_RELEASE__/hermes-box-provisioner-linux-arm64.tar.zst
+  provisioner_sha256: __PROVISIONER_SHA256__
+tooling:
+  node:
+    version: "24.17.0"
+    archive: https://nodejs.org/dist/v24.17.0/node-v24.17.0-linux-arm64.tar.xz
+    sha256: 67324b9e515e7d13da72571a5dd522bb23145a820f7dde15497897e466759ab3
+  uv:
+    version: "0.11.23"
+    archive: https://github.com/astral-sh/uv/releases/download/0.11.23/uv-aarch64-unknown-linux-gnu.tar.gz
+    sha256: 1873a77350f6621279ae1a0d2227f2bd8b67131598f14a7eb0ba2215d3da2c98
+claude:
+  version: "2.1.177"
+  package: "@anthropic-ai/claude-code"
+  tarball: https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.177.tgz
+  integrity: sha512-pbBlT4O36j60k7Zd1aPQlVU1HFFpvFaTTnrsWLAVKdIHK/EcLjVjE/qY8kz9/e62XerK/UhJrZ8GsLaBNQ+6Mw==
+codex:
+  version: "0.142.0"
+  archive: https://github.com/openai/codex/releases/download/rust-v0.142.0/codex-aarch64-unknown-linux-musl-bundle.tar.zst
+  sha256: 8532ce8c89a14a4f89bcfb2874c64f2cf020a25d6d3c850c988745b127749ce3
+hermes:
+  repository: https://github.com/NousResearch/hermes-agent.git
+  commit: 2bd1977d8fad185c9b4be47884f7e87f1add0ce3
+  archive: https://github.com/davis7dotsh/hermes-box/releases/download/__ASSET_RELEASE__/hermes-agent-gated-0.17.0.tar.zst
+  sha256: __HERMES_SOURCE_SHA256__
+  uv_lock_sha256: d6f3ad43c208cff1b9397ac4d6b74f0564d3b0d2b28f8a38386f3558bd4bf18f
+  python_archive: https://github.com/astral-sh/python-build-standalone/releases/download/20260610/cpython-3.13.14%2B20260610-aarch64-unknown-linux-gnu-install_only_stripped.tar.gz
+  python_sha256: 6f45030255928d210fe2963a769c53b9f99827779557d117d2b97332ad06f943
+  wheels_archive: https://github.com/davis7dotsh/hermes-box/releases/download/__ASSET_RELEASE__/hermes-wheels-cp313-linux-arm64.tar.zst
+  wheels_sha256: __HERMES_WHEELS_SHA256__
+executor:
+  image: ghcr.io/rhyssullivan/executor-selfhost:v1.5.17@sha256:abfa6bbd4bd59f486a51716a7c0847ba61d43aa90b7d0aba18a79d4be0c1b599
+  linux_arm64_digest: sha256:a35c5a9d9fc7f158ab317e55f95e10c92eda5995df7e1d172999df3c06833dee

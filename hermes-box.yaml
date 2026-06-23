@@ -1,0 +1,11 @@
+schema: 1
+name: main
+vm:
+  cpus: 4
+  memory: 8GiB
+  root_disk: 30GiB
+  data_disk: 50GiB
+ports:
+  executor: 4788
+backup:
+  keep: 5

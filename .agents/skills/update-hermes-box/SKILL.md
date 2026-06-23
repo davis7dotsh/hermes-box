@@ -1,99 +1,113 @@
 ---
 name: update-hermes-box
-description: Safely audit and upgrade pinned Hermes Box components through isolated implementation, validation, independent review, a ready pull request from current main, and monitoring until every required check and review thread is green. Use when updating Hermes Agent, smolvm, uv, Ubuntu, Codex, Executor, Node, Go, CI actions, or when performing a general Hermes Box dependency freshness pass.
+description: Safely audit and upgrade Hermes Box v2 pins and release inputs through the reviewed input-only lock, reproducible ARM64 release artifacts, trusted guest installers, encrypted transaction snapshots, isolated Lima lifecycle proof, independent review, and a ready pull request. Use for Hermes Agent, Lima, Ubuntu, the guest provisioner, uv, Node, Python, Claude Code, Codex, Executor, Go, or CI action updates and for general Hermes Box dependency freshness passes.
 ---
 
 # Update Hermes Box
 
-Upgrade one or more Hermes Box components without weakening its host boundary,
-backup compatibility, reproducibility, or recovery path. Treat release discovery,
-implementation, lifecycle proof, and PR follow-through as one workflow.
+Update one or more v2 inputs without weakening artifact integrity, transactional
+rollback, backup closure, or the host boundary. Treat discovery, release-input
+construction, implementation, isolated proof, review, and PR follow-through as
+one workflow.
 
-Read [references/components.md](references/components.md) for each selected
-component before planning edits.
+Read [references/components.md](references/components.md) completely before
+planning edits, then apply the sections for the selected components.
 
-## Operating contract
+## Invariants
 
-- Read `AGENTS.md` and `README.md` completely before changing behavior.
-- Read every repository file you inspect completely.
-- Preserve unrelated user changes. Stop if they overlap and cannot be separated.
-- Use only official release pages, repositories, package indexes, and checksums
-  for version and provenance decisions.
-- Treat `state/`, `images/`, `backups/`, `hermes-box.conf`, and
-  `secret-env.txt` as private runtime material. Never commit them.
-- Never operate the primary machine names, ports, or data directories while
-  validating an upgrade.
-- Do not run `dev`, `build`, or a lifecycle test unless repository instructions
-  and the user's authorization permit it.
-- Keep a component pinned when the newer release cannot satisfy the same
-  security, compatibility, and recovery checks. “Latest” is not itself proof.
+- Read `AGENTS.md`, `README.md`, and every inspected repository file fully.
+- Preserve unrelated changes. Stop if they overlap and cannot be separated.
+- Use official releases, repositories, indexes, checksums, and attestations.
+- Keep `hermes-box.lock` input-only. Runtime commands never select versions or
+  write it.
+- Keep the data disk durable and the VM root reconstructable. Never restore a
+  root filesystem or add v1/smolvm compatibility.
+- Keep install and activation logic in the static trusted guest helper. The host
+  only materializes verified artifacts, creates encrypted snapshots, uploads
+  inputs, and invokes the guest protocol.
+- Never put secrets in config, locks, arguments, logs, metadata, or Git.
+- Never operate the primary box, default homes, or primary port during proof.
+- Keep a current pin when the candidate cannot pass the same integrity,
+  rollback, backup, and lifecycle checks. "Latest" is not qualification.
 - Publish a ready PR unless the user explicitly requests a draft.
 
 ## Inputs
 
-Resolve these from the request and repository before asking questions:
+Resolve before asking a question:
 
-1. Components to update.
-2. Target version, tag, commit, image digest, or “latest stable.”
-3. Base branch, normally `main`.
+1. Components and target immutable versions, commits, or digests.
+2. Base branch, normally `main`.
+3. Whether the change affects only applications or requires `rebuild`.
 4. Whether isolated lifecycle operations are explicitly authorized.
-5. Whether the task includes only an audit or also implementation and PR work.
+5. Whether the task is audit-only or includes implementation and publication.
 
-Ask one question only when a missing answer materially changes safety or scope.
+Ask one question only when a missing answer changes safety or scope.
 
-## Canonical workflow
+## Workflow
 
-### 1. Establish a clean baseline
+### 1. Establish the baseline
 
-Run:
+Inspect the worktree and remote before switching anything:
 
 ```bash
 git status --short --branch
 git remote -v
 gh auth status
 git fetch origin
-BASE_BRANCH=${BASE_BRANCH:-main}
-git switch "$BASE_BRANCH"
-git pull --ff-only origin "$BASE_BRANCH"
 ```
 
-Do not switch branches when the worktree contains overlapping user changes.
-Inspect open PRs when an upgrade may already be in progress.
-
-Run the contributor probes from `AGENTS.md`, including the installed Go and
-smolvm versions. Run `make check` before editing when a baseline failure would
-otherwise be confused with the upgrade.
-
-### 2. Create one focused branch
-
-Use a concise branch derived from the component set:
+Start from current `main` only when doing so will not overwrite shared work:
 
 ```bash
+git switch main
+git pull --ff-only origin main
 git switch -c codex/update-<component-or-group>
 ```
 
-Split upgrades when one component has an independent rollback boundary or
-requires a substantially different lifecycle matrix. Prefer separate PRs for:
+Run the contributor probes from `AGENTS.md`, including `limactl --version`, and
+run `make check` when a baseline result is needed.
 
-- Hermes source plus its commit-anchored approval patch.
-- smolvm host/runtime behavior.
-- A previously failing tool qualification such as uv.
+### 2. Map the authoritative seams
 
-Combine only tightly coupled upgrades that must be proven together.
+Search and then read every matched file fully. The usual authorities are:
 
-### 3. Resolve official release provenance
+- `release/pins.env`: reviewed upstream versions, URLs, commits, digests, and
+  checksums.
+- `release/qualification.lock.template`: candidate lock with placeholders only
+  for repository-built artifacts.
+- `release/`: deterministic provisioner, gated Hermes source, wheel closure,
+  lock rendering, and verification.
+- `.github/workflows/release-artifacts.yml`: native ARM64 replay, publication,
+  attestation, and exact-URL verification.
+- `internal/config`: lock schema and validation.
+- `internal/component`: dependency order and fixed durable snapshot scopes.
+- `internal/guestupdate`: trusted installers, validation, activation, rollback,
+  crash recovery, freeze/thaw, and scoped restore.
+- `internal/app/default_components.go`: host artifact materialization and guest
+  protocol construction.
+- `internal/app/default_backup.go`: self-contained backup closure and encrypted
+  transaction snapshots.
+- README, operator docs, static tests, and lifecycle assertions.
 
-For every component:
+Do not treat a generated workflow artifact as the repository lock. The root
+lock is promoted only after publication and lifecycle qualification.
 
-1. Identify the latest stable release and publication date.
-2. Resolve moving tags to immutable commits or image digests.
-3. Download or query the exact ARM64/macOS/Linux artifact used by Hermes Box.
-4. Verify the publisher-provided SHA-256 or attestation.
-5. Read release notes and compare the old and new revisions.
-6. Record breaking changes, security fixes, migrations, and removals.
+### 3. Resolve provenance and compatibility
+
+For each candidate:
+
+1. Identify the latest requested stable release and publication date.
+2. Resolve moving tags to immutable commits or OCI digests.
+3. Select the exact Darwin ARM64, Linux ARM64, npm, cloud-image, or OCI input
+   used by Hermes Box.
+4. Verify publisher checksums, npm SRI, OCI index and child digests, or an
+   independently reviewed checksum.
+5. Compare every release note and upstream revision since the current pin.
+6. Record breaking changes, migrations, security changes, package/runtime
+   requirements, and obsolete workarounds.
 7. Reject prereleases unless explicitly requested.
 
-Useful GitHub commands:
+Useful GitHub probes include:
 
 ```bash
 gh release list --repo OWNER/REPO --limit 10
@@ -102,57 +116,73 @@ gh api repos/OWNER/REPO/git/ref/tags/TAG
 gh api repos/OWNER/REPO/compare/OLD...NEW
 ```
 
-Do not trust a major-version action tag, OCI tag, or release label as an
-immutable pin. Resolve and retain the reviewed commit or digest where the
-repository's security model expects immutability.
+Inspect OCI indexes and npm metadata directly; never substitute a mutable tag
+for the immutable identities required by the lock.
 
-### 4. Map the complete patch surface
+### 4. Rehearse fragile changes in `/tmp`
 
-Search all tracked source, tests, examples, CI, and documentation for:
+Use disposable downloads, clones, and extracted archives. Depending on the
+component, prove:
 
-- Version strings, tags, commits, digests, checksums, and download URLs.
-- Compatibility checks and error messages.
-- Workarounds tied to the old version.
-- Backup manifests, restore preflight, portable archives, and generated
-  handoff text.
-- Runtime health checks and lifecycle assertions.
-- Security promises whose implementation depends on the component.
+- the candidate artifact hash and archive shape;
+- release-time Hermes approval patch anchors and regression behavior;
+- an offline Hermes wheel closure against the exact Python, uv, and `uv.lock`;
+- the trusted guest installer's expected executable layout;
+- OCI index selection and Linux ARM64 child identity;
+- bounded cold and cache/retry behavior for an installer with prior failures.
 
-Use `rg`, then read each matched file in full. Build a component-specific list
-of code, tests, docs, migration behavior, and required validation before editing.
+Do not install a candidate globally or use a primary VM for rehearsal.
 
-### 5. Rehearse fragile transformations before touching the repo
+### 5. Implement the smallest coherent update
 
-Use disposable directories under `/tmp` for upstream clones, archives, and
-compatibility experiments. Examples:
+- Update `release/pins.env`, the qualification template, tests, documentation,
+  and strict validators together.
+- Change trusted installer logic only when the upstream artifact contract
+  changed. Keep archive traversal, checksum, digest, and executable-count
+  checks fail-closed.
+- Preserve the fixed component snapshot scope unless a reviewed upstream
+  migration proves that more durable state can change.
+- Preserve one previous release and one encrypted pre-update snapshot.
+- Keep application updates explicit through `hermes-box update`; apply Ubuntu,
+  provisioner, foundational package, and Lima-compatibility changes through
+  `hermes-box rebuild`.
+- Do not make vendor self-updaters authoritative.
+- Update handoff, backup, restore, and recovery text in the same patch.
 
-- Apply commit-anchored source patch functions to copies of the new upstream
-  files and count every expected anchor.
-- Compare old and new CLI help using a downloaded, checksum-verified binary
-  without installing it globally.
-- Inspect OCI indexes and select the exact Linux ARM64 child manifest.
-- Run bounded reproductions for a previously hanging installer.
+If repository-owned artifacts change, build a new immutable asset release. Do
+not replace files in an existing release tag.
 
-Never use a production VM or primary Hermes Box resource for rehearsal.
+### 6. Build and qualify release inputs
 
-### 6. Implement the smallest coherent upgrade
+Follow `release/README.md`. On native Linux ARM64:
 
-- Update every authoritative pin and its matching checksum.
-- Update strict version validators, install guidance, and test fixtures.
-- Port source patches against the new exact revision; retain fail-closed anchor
-  checks and compilation tests.
-- Preserve backup and restore compatibility unless the PR explicitly defines
-  and tests a format migration.
-- Keep old workarounds until the new version proves them unnecessary. Remove a
-  workaround only with a regression test demonstrating the upstream fix.
-- Add packages using the ecosystem's install command when applicable; do not
-  hand-edit package manifests.
-- Update user-facing docs and handoff output in the same patch.
+```bash
+artifact_dir=${RUNNER_TEMP:-/tmp}/hermes-box-release
+sudo release/build-provisioner.sh "$artifact_dir"
+release/build-hermes-source.sh "$artifact_dir"
+release/build-hermes-wheels.sh "$artifact_dir"
+release/render-lock.sh "$artifact_dir" "$artifact_dir/hermes-box.lock"
+release/verify-release.sh "$artifact_dir"
+```
+
+Build the three repository-owned archives again in a clean workspace and
+compare their checksum files. A candidate lock is not qualified until:
+
+1. Both clean ARM64 builds are byte-identical.
+2. Offline Hermes replay, approval tests, archive manifests, and `.deb`
+   checksums pass.
+3. The immutable assets and checksums are published and attested.
+4. Every exact published URL is downloaded and verified again.
+5. The generated lock passes the isolated lifecycle matrix.
+6. That exact generated lock is promoted to the repository root through the
+   reviewed PR.
+
+Qualification PRs build without publishing. Only an explicitly authorized tag
+or workflow dispatch may publish assets.
 
 ### 7. Validate locally
 
-After every code or script change, run the focused test first. Before review,
-run the repository gate:
+Run focused tests after each code or script change. Before review:
 
 ```bash
 make format
@@ -161,99 +191,88 @@ git diff --check
 git status --short
 ```
 
-Do not claim runtime compatibility from `make check` alone when the component
-participates in VM creation, provisioning, packing, restore, or first boot.
+`make check` is necessary but cannot prove VM provisioning, update migration,
+backup/restore, or runtime behavior.
 
-### 8. Run isolated lifecycle proof when authorized
+### 8. Prove the isolated lifecycle when authorized
 
-Follow the exact isolation rules in `AGENTS.md`. Use unique machine names,
-builder names, data directories, SSH ports, and Executor ports. Check that the
-chosen ports are unused before creating anything.
+Use only the guarded entrypoint from `AGENTS.md`:
 
-At minimum prove:
+```bash
+HERMES_BOX_E2E=1 ./tests/lifecycle.sh
+```
 
-1. Fresh builder provisioning.
-2. Pack creation and runtime creation.
-3. First boot and SSH health.
-4. Hermes version and gated-approval regression tests.
-5. Supervisor, gateway, and optional Executor health.
-6. Snapshot, restore candidate verification, and portable packaging where the
-   upgraded component affects those paths.
-7. Stop/start persistence and cleanup of only the disposable resources.
+Do not reproduce its destructive commands against normal homes. At minimum
+prove the affected paths among:
 
-When a component previously failed or hung, run the exact bounded reproduction
-at least twice: one cold run and one cache/retry run. Save the exact failure
-output if the candidate is rejected.
+1. Fresh Ubuntu 26.04 create and separately named Lima data disk.
+2. Locked component versions and systemd service health.
+3. Three stop/start cycles and persistent data.
+4. Component update, encrypted snapshot, rollback, and restored user state.
+5. Full backup, restore into an absent destination, and artifact closure.
+6. Root rebuild with the same data disk and automatic prior-lock recovery.
+7. Loopback-only Executor exposure and isolated cleanup.
+
+For a prior hang or regression, run the bounded reproduction cold and again
+with populated caches. Preserve exact diagnostics for a rejected candidate.
 
 ### 9. Run independent reviews
 
-Keep review roles separate from implementation:
+Keep reviewers read-only and separate from implementation:
 
-- **Correctness/security review:** version provenance, pin consistency,
-  authorization boundaries, source-patch semantics, backup/restore behavior,
-  runtime compatibility, edge cases, and test adequacy.
-- **Operational/UX review:** setup flow, handoff text, failure messages,
-  upgrade/migration clarity, recovery instructions, and whether behavior feels
-  native to the existing CLI.
+- Correctness/security: provenance, pin consistency, guest protocol,
+  authorization, snapshot scope, rollback, backup closure, restore/rebuild,
+  redaction, and test adequacy.
+- Operational/UX: update/rebuild distinction, setup and handoff, failure and
+  recovery text, downtime, and migration clarity.
 
-Reviewers must not edit. Triage findings, send accepted fixes back to the
-implementation pass, revalidate, then request focused re-review.
+Fix accepted findings, rerun validation, and request focused re-review.
 
-### 10. Commit and open a ready PR
+### 10. Open and monitor the ready PR
 
-Inspect the final diff and ensure the worktree contains only intended files.
-Commit with a component-focused message, push, and open a ready PR against the
-resolved base branch.
+Commit only intended files, push, and open a ready PR against the resolved base.
+Include:
 
-The PR must state:
+- old and new immutable identities;
+- provenance and release-artifact construction;
+- user-visible effect and required `update` or `rebuild` command;
+- snapshot, rollback, backup, and migration impact;
+- local and lifecycle evidence actually obtained;
+- unverified paths and intentionally deferred candidates.
 
-- Old and new versions or immutable identifiers.
-- User-visible effect and migration behavior.
-- Workarounds added, retained, or removed.
-- Local and lifecycle validation actually performed.
-- Any unverified destructive or live-machine path.
-- Intentionally deferred upgrades and why.
-
-### 11. Monitor until genuinely green
-
-Watch GitHub Actions and external checks on the current head:
+Monitor checks and actionable review threads on the current head:
 
 ```bash
 gh pr checks PR --json name,state,bucket,link
 gh pr checks PR --watch --interval 10
 ```
 
-For failures, inspect the Actions log before editing. Reproduce the failure
-locally when possible, make the narrowest fix, rerun the full local gate,
-commit, and push.
-
-Read review threads with GitHub GraphQL so resolved/outdated state is visible.
-Address every current actionable thread, verify the pushed fix, then resolve
-the thread and read it back. Repeat until:
-
-- All required checks pass on the latest head.
-- The PR is mergeable and targets the resolved base branch.
-- No unresolved actionable review thread remains.
-- The local branch is clean and matches its remote.
+Inspect failure logs before editing. Read thread-level state through GitHub
+GraphQL, address every current actionable thread, verify the pushed fix, and
+resolve it. Finish only when checks pass, the PR is mergeable, review threads
+are clear, and the local branch matches its remote.
 
 ## Recovery rules
 
-- If provenance or checksum verification fails, stop and reject the candidate.
-- If a commit-anchored patch drifts, port and independently review it; never
-  weaken exact-match checks to make the install pass.
-- If an isolated lifecycle run fails, preserve its diagnostics and follow the
-  cleanup command from `AGENTS.md` using the same isolated variables.
-- If a new component breaks old backups, either restore compatibility or make
-  the format migration explicit, versioned, documented, and tested.
-- If an external review suggestion broadens into an unrelated upgrade, defer it
-  to a separate issue or PR.
+- Reject a candidate on failed provenance, checksum, SRI, digest, attestation,
+  deterministic replay, or offline closure verification.
+- Never weaken a release-time Hermes patch anchor; port it and independently
+  review the resulting gated source.
+- Preserve the isolated lifecycle paths printed by the harness if cleanup is
+  interrupted; never substitute defaults.
+- If a component migration expands durable writes, expand its encrypted
+  snapshot scope and prove rollback before activation.
+- If an update breaks the recovery format, make the schema migration explicit,
+  versioned, documented, and tested in the same PR.
+- Defer unrelated upgrades rather than hiding them inside a coupled artifact
+  rebuild.
 
 ## Done condition
 
-Finish only when the requested components are updated or explicitly rejected
-with evidence, focused and repository-wide validation pass, accepted review
-findings are fixed, the ready PR is clean and green on its latest commit, and
-all actionable review threads are resolved.
+Finish only when every requested candidate is qualified or rejected with
+evidence, local and authorized lifecycle validation pass, accepted findings are
+fixed, the ready PR is green, and actionable review threads are resolved.
 
-Report the branch, commits, PR URL, checks, lifecycle evidence, review
-disposition, migration impact, and deferred follow-ups.
+Report the branch, commits, PR URL, immutable old/new identities, artifact
+publication, checks, lifecycle evidence, review disposition, migration command,
+and deferred work.

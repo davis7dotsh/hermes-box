@@ -1,0 +1,17 @@
+#cloud-config
+write_files:
+  - path: /etc/ssh/sshd_config.d/00-hermes-box.conf
+    owner: root:root
+    permissions: "0644"
+    content: |
+      PubkeyAuthentication yes
+      PasswordAuthentication no
+      KbdInteractiveAuthentication no
+      PermitEmptyPasswords no
+      PermitRootLogin no
+      AllowUsers agent
+      AuthorizedKeysFile /etc/ssh/authorized_keys.d/%u
+      AllowAgentForwarding no
+      AllowTcpForwarding no
+      X11Forwarding no
+      PermitTunnel no

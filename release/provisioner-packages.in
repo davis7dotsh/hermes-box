@@ -1,0 +1,12 @@
+ca-certificates
+curl
+git
+jq
+openssh-client
+openssh-server
+podman
+ripgrep
+sudo
+tmux
+util-linux
+zstd

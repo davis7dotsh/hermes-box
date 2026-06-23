@@ -1,434 +1,358 @@
 package config
 
 import (
-	"bufio"
+	"bytes"
+	"encoding/base64"
+	"errors"
 	"fmt"
+	"io"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+
+	"gopkg.in/yaml.v3"
 )
 
 const (
-	defaultMachineName   = "hermes-box"
-	defaultBuilderName   = "hermes-builder"
-	defaultSSHPort       = 2222
-	defaultCPUs          = 4
-	defaultMemoryMiB     = 8192
-	defaultStorageGB     = 15
-	defaultOverlayGB     = 6
-	defaultNetworkMode   = "full"
-	defaultHermesCommit  = "2bd1977d8fad185c9b4be47884f7e87f1add0ce3"
-	defaultExecutorPort  = 4788
-	defaultExecutorImage = "ghcr.io/rhyssullivan/executor-selfhost:v1.5.16@sha256:5d763c718b6567d56e0168d3c205065a37355da1468290f2030f7f6c792f02b6"
+	ConfigSchema = 1
+	LockSchema   = 1
+)
+
+var (
+	namePattern   = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	sizePattern   = regexp.MustCompile(`^([1-9][0-9]*)(MiB|GiB|TiB)$`)
+	hex40Pattern  = regexp.MustCompile(`^[0-9a-f]{40}$`)
+	hex64Pattern  = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	digestPattern = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
+	datedImage    = regexp.MustCompile(`/release-[0-9]{8}/`)
 )
 
 type Config struct {
-	MachineName     string
-	BuilderName     string
-	SSHPort         int
-	CPUs            int
-	MemoryMiB       int
-	StorageGB       int
-	OverlayGB       int
-	NetworkMode     string
-	HermesCommit    string
-	ExecutorEnabled bool
-	ExecutorPort    int
-	ExecutorImage   string
-	DataDir         string
-	SSHKey          string
-	ConfigFile      string
+	Schema int          `yaml:"schema"`
+	Name   string       `yaml:"name"`
+	VM     VMConfig     `yaml:"vm"`
+	Ports  PortsConfig  `yaml:"ports"`
+	Backup BackupConfig `yaml:"backup"`
 }
 
-var keys = map[string]func(*Config, string) error{
-	"HERMES_BOX_MACHINE_NAME": func(c *Config, value string) error {
-		c.MachineName = value
-		return nil
-	},
-	"HERMES_BOX_BUILDER_NAME": func(c *Config, value string) error {
-		c.BuilderName = value
-		return nil
-	},
-	"HERMES_BOX_SSH_PORT": func(c *Config, value string) error {
-		return setInt(&c.SSHPort, "HERMES_BOX_SSH_PORT", value)
-	},
-	"HERMES_BOX_CPUS": func(c *Config, value string) error {
-		return setInt(&c.CPUs, "HERMES_BOX_CPUS", value)
-	},
-	"HERMES_BOX_MEMORY_MIB": func(c *Config, value string) error {
-		return setInt(&c.MemoryMiB, "HERMES_BOX_MEMORY_MIB", value)
-	},
-	"HERMES_BOX_STORAGE_GB": func(c *Config, value string) error {
-		return setInt(&c.StorageGB, "HERMES_BOX_STORAGE_GB", value)
-	},
-	"HERMES_BOX_OVERLAY_GB": func(c *Config, value string) error {
-		return setInt(&c.OverlayGB, "HERMES_BOX_OVERLAY_GB", value)
-	},
-	"HERMES_BOX_NETWORK_MODE": func(c *Config, value string) error {
-		c.NetworkMode = value
-		return nil
-	},
-	"HERMES_BOX_HERMES_COMMIT": func(c *Config, value string) error {
-		c.HermesCommit = value
-		return nil
-	},
-	"HERMES_BOX_EXECUTOR_ENABLED": func(c *Config, value string) error {
-		return setBool(&c.ExecutorEnabled, "HERMES_BOX_EXECUTOR_ENABLED", value)
-	},
-	"HERMES_BOX_EXECUTOR_PORT": func(c *Config, value string) error {
-		return setInt(&c.ExecutorPort, "HERMES_BOX_EXECUTOR_PORT", value)
-	},
-	"HERMES_BOX_EXECUTOR_IMAGE": func(c *Config, value string) error {
-		c.ExecutorImage = value
-		return nil
-	},
-	"HERMES_BOX_DATA_DIR": func(c *Config, value string) error {
-		c.DataDir = value
-		return nil
-	},
-	"HERMES_BOX_SSH_KEY": func(c *Config, value string) error {
-		c.SSHKey = value
-		return nil
-	},
+type VMConfig struct {
+	CPUs     int    `yaml:"cpus"`
+	Memory   string `yaml:"memory"`
+	RootDisk string `yaml:"root_disk"`
+	DataDisk string `yaml:"data_disk"`
 }
 
-var controlEnvironmentKeys = map[string]struct{}{
-	"HERMES_BOX_CONFIG":       {},
-	"HERMES_BOX_E2E":          {},
-	"HERMES_BOX_PROJECT_ROOT": {},
+type PortsConfig struct {
+	Executor int `yaml:"executor"`
 }
 
-func Load(projectRoot string, environ []string) (Config, error) {
-	cfg := Config{
-		MachineName:   defaultMachineName,
-		BuilderName:   defaultBuilderName,
-		SSHPort:       defaultSSHPort,
-		CPUs:          defaultCPUs,
-		MemoryMiB:     defaultMemoryMiB,
-		StorageGB:     defaultStorageGB,
-		OverlayGB:     defaultOverlayGB,
-		NetworkMode:   defaultNetworkMode,
-		HermesCommit:  defaultHermesCommit,
-		ExecutorPort:  defaultExecutorPort,
-		ExecutorImage: defaultExecutorImage,
+type BackupConfig struct {
+	Keep int `yaml:"keep"`
+}
+
+type Lock struct {
+	Schema   int          `yaml:"schema"`
+	Host     HostLock     `yaml:"host"`
+	Ubuntu   UbuntuLock   `yaml:"ubuntu"`
+	Tooling  ToolingLock  `yaml:"tooling"`
+	Claude   ClaudeLock   `yaml:"claude"`
+	Codex    CodexLock    `yaml:"codex"`
+	Hermes   HermesLock   `yaml:"hermes"`
+	Executor ExecutorLock `yaml:"executor"`
+}
+
+type HostLock struct {
+	Lima string `yaml:"lima"`
+}
+
+type UbuntuLock struct {
+	Release           string `yaml:"release"`
+	Image             string `yaml:"image"`
+	SHA256            string `yaml:"sha256"`
+	Provisioner       string `yaml:"provisioner"`
+	ProvisionerSHA256 string `yaml:"provisioner_sha256"`
+}
+
+type ToolingLock struct {
+	Node ToolLock `yaml:"node"`
+	UV   ToolLock `yaml:"uv"`
+}
+
+type ToolLock struct {
+	Version string `yaml:"version"`
+	Archive string `yaml:"archive"`
+	SHA256  string `yaml:"sha256"`
+}
+
+type ClaudeLock struct {
+	Version   string `yaml:"version"`
+	Package   string `yaml:"package"`
+	Tarball   string `yaml:"tarball"`
+	Integrity string `yaml:"integrity"`
+}
+
+type CodexLock struct {
+	Version string `yaml:"version"`
+	Archive string `yaml:"archive"`
+	SHA256  string `yaml:"sha256"`
+}
+
+type HermesLock struct {
+	Repository    string `yaml:"repository"`
+	Commit        string `yaml:"commit"`
+	Archive       string `yaml:"archive"`
+	SHA256        string `yaml:"sha256"`
+	UVLockSHA256  string `yaml:"uv_lock_sha256"`
+	PythonArchive string `yaml:"python_archive"`
+	PythonSHA256  string `yaml:"python_sha256"`
+	WheelsArchive string `yaml:"wheels_archive"`
+	WheelsSHA256  string `yaml:"wheels_sha256"`
+}
+
+type ExecutorLock struct {
+	Image            string `yaml:"image"`
+	LinuxARM64Digest string `yaml:"linux_arm64_digest"`
+}
+
+type Bundle struct {
+	Config     Config
+	Lock       Lock
+	ConfigPath string
+	LockPath   string
+	Dir        string
+}
+
+func Load(explicitPath, cwd string, environ []string) (Bundle, error) {
+	if err := ValidateEnvironment(environ); err != nil {
+		return Bundle{}, err
 	}
-
-	env := environment(environ)
-	secretMappings, err := ReadSecretMappings(filepath.Join(projectRoot, "secret-env.txt"))
+	configPath, err := ResolvePath(explicitPath, cwd, environ)
 	if err != nil {
-		return Config{}, err
+		return Bundle{}, err
 	}
-	secretHostKeys := secretHostEnvironmentKeys(secretMappings)
-	for key := range env {
-		if !strings.HasPrefix(key, "HERMES_BOX_") {
-			continue
-		}
-		if _, known := keys[key]; known {
-			continue
-		}
-		if _, control := controlEnvironmentKeys[key]; control {
-			continue
-		}
-		if _, secretHost := secretHostKeys[key]; secretHost {
-			continue
-		}
-		return Config{}, fmt.Errorf("unknown Hermes Box environment setting %q", key)
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		return Bundle{}, err
 	}
-	cfg.ConfigFile = filepath.Join(projectRoot, "hermes-box.conf")
-	if value, ok := env["HERMES_BOX_CONFIG"]; ok && value != "" {
-		cfg.ConfigFile = value
+	dir := filepath.Dir(configPath)
+	lockPath := filepath.Join(dir, "hermes-box.lock")
+	lock, err := LoadLock(lockPath)
+	if err != nil {
+		return Bundle{}, err
 	}
+	return Bundle{
+		Config: cfg, Lock: lock, ConfigPath: configPath, LockPath: lockPath, Dir: dir,
+	}, nil
+}
 
-	if err := loadFile(&cfg, cfg.ConfigFile); err != nil {
-		return Config{}, err
+func ResolvePath(explicitPath, cwd string, environ []string) (string, error) {
+	if cwd == "" {
+		return "", errors.New("working directory must not be empty")
 	}
-	for key, setter := range keys {
-		if value, ok := env[key]; ok {
-			if err := setter(&cfg, value); err != nil {
-				return Config{}, err
+	selected := explicitPath
+	if selected == "" {
+		selected = environment(environ)["HERMES_BOX_CONFIG"]
+	}
+	if selected == "" {
+		selected = filepath.Join(cwd, "hermes-box.yaml")
+	} else if !filepath.IsAbs(selected) {
+		selected = filepath.Join(cwd, selected)
+	}
+	abs, err := filepath.Abs(selected)
+	if err != nil {
+		return "", fmt.Errorf("resolve config path: %w", err)
+	}
+	return filepath.Clean(abs), nil
+}
+
+func ValidateEnvironment(environ []string) error {
+	allowed := map[string]struct{}{
+		"HERMES_BOX_CONFIG": {},
+		"HERMES_BOX_HOME":   {},
+	}
+	for key := range environment(environ) {
+		if strings.HasPrefix(key, "HERMES_BOX_") {
+			if _, ok := allowed[key]; !ok {
+				return fmt.Errorf("unknown Hermes Box environment setting %q", key)
 			}
 		}
 	}
-	cfg.applyEmptyDefaults()
-	if cfg.DataDir != "" {
-		if !filepath.IsAbs(cfg.DataDir) {
-			cfg.DataDir = filepath.Join(projectRoot, cfg.DataDir)
-		}
-		cfg.DataDir = filepath.Clean(cfg.DataDir)
-	}
-	if cfg.SSHKey != "" {
-		if !filepath.IsAbs(cfg.SSHKey) {
-			cfg.SSHKey = filepath.Join(projectRoot, cfg.SSHKey)
-		}
-		cfg.SSHKey = filepath.Clean(cfg.SSHKey)
+	return nil
+}
+
+func LoadConfig(path string) (Config, error) {
+	var cfg Config
+	if err := decodeStrictFile(path, &cfg); err != nil {
+		return Config{}, err
 	}
 	if err := cfg.Validate(); err != nil {
-		return Config{}, err
+		return Config{}, fmt.Errorf("validate config %s: %w", path, err)
 	}
 	return cfg, nil
 }
 
-func (c *Config) applyEmptyDefaults() {
-	if c.MachineName == "" {
-		c.MachineName = defaultMachineName
+func LoadLock(path string) (Lock, error) {
+	var lock Lock
+	if err := decodeStrictFile(path, &lock); err != nil {
+		return Lock{}, err
 	}
-	if c.BuilderName == "" {
-		c.BuilderName = defaultBuilderName
+	if err := lock.Validate(); err != nil {
+		return Lock{}, fmt.Errorf("validate lock %s: %w", path, err)
 	}
-	if c.NetworkMode == "" {
-		c.NetworkMode = defaultNetworkMode
-	}
-	if c.HermesCommit == "" {
-		c.HermesCommit = defaultHermesCommit
-	}
-	if c.ExecutorImage == "" {
-		c.ExecutorImage = defaultExecutorImage
-	}
+	return lock, nil
 }
 
 func (c Config) Validate() error {
-	if c.MachineName == "" {
-		return fmt.Errorf("HERMES_BOX_MACHINE_NAME must not be empty")
+	if c.Schema != ConfigSchema {
+		return fmt.Errorf("schema must be exactly %d", ConfigSchema)
 	}
-	if c.BuilderName == "" {
-		return fmt.Errorf("HERMES_BOX_BUILDER_NAME must not be empty")
+	if !namePattern.MatchString(c.Name) {
+		return errors.New("name must match [a-z][a-z0-9-]{0,31}")
 	}
-	if c.MachineName == c.BuilderName {
-		return fmt.Errorf("runtime and builder machine names must differ")
+	if c.VM.CPUs < 1 || c.VM.CPUs > 64 {
+		return errors.New("vm.cpus must be between 1 and 64")
 	}
-	if c.SSHPort < 1 || c.SSHPort > 65535 {
-		return fmt.Errorf("HERMES_BOX_SSH_PORT must be between 1 and 65535")
+	if err := validateSize("vm.memory", c.VM.Memory, 512<<20, 512<<30); err != nil {
+		return err
 	}
-	if c.ExecutorEnabled && (c.ExecutorPort < 1 || c.ExecutorPort > 65535) {
-		return fmt.Errorf("HERMES_BOX_EXECUTOR_PORT must be between 1 and 65535")
+	if err := validateSize("vm.root_disk", c.VM.RootDisk, 10<<30, 16<<40); err != nil {
+		return err
 	}
-	if c.ExecutorEnabled && c.ExecutorPort == c.SSHPort {
-		return fmt.Errorf("HERMES_BOX_EXECUTOR_PORT must differ from HERMES_BOX_SSH_PORT")
+	if err := validateSize("vm.data_disk", c.VM.DataDisk, 1<<30, 16<<40); err != nil {
+		return err
 	}
-	if c.ExecutorEnabled {
-		if err := validatePinnedImage(c.ExecutorImage); err != nil {
-			return fmt.Errorf("HERMES_BOX_EXECUTOR_IMAGE %w", err)
-		}
+	if c.Ports.Executor < 1024 || c.Ports.Executor > 65535 {
+		return errors.New("ports.executor must be between 1024 and 65535")
 	}
-	for name, value := range map[string]int{
-		"HERMES_BOX_CPUS":       c.CPUs,
-		"HERMES_BOX_MEMORY_MIB": c.MemoryMiB,
-		"HERMES_BOX_STORAGE_GB": c.StorageGB,
-		"HERMES_BOX_OVERLAY_GB": c.OverlayGB,
+	if c.Backup.Keep < 1 || c.Backup.Keep > 100 {
+		return errors.New("backup.keep must be between 1 and 100")
+	}
+	return nil
+}
+
+func (l Lock) Validate() error {
+	if l.Schema != LockSchema {
+		return fmt.Errorf("schema must be exactly %d", LockSchema)
+	}
+	if l.Host.Lima != "2.1.3" {
+		return errors.New("host.lima must be the qualified version 2.1.3")
+	}
+	if l.Ubuntu.Release != "26.04" {
+		return errors.New("ubuntu.release must be 26.04")
+	}
+	for _, item := range []struct{ name, value string }{
+		{"ubuntu.image", l.Ubuntu.Image}, {"ubuntu.provisioner", l.Ubuntu.Provisioner},
+		{"tooling.node.archive", l.Tooling.Node.Archive}, {"tooling.uv.archive", l.Tooling.UV.Archive},
+		{"claude.tarball", l.Claude.Tarball}, {"codex.archive", l.Codex.Archive},
+		{"hermes.repository", l.Hermes.Repository}, {"hermes.archive", l.Hermes.Archive},
+		{"hermes.python_archive", l.Hermes.PythonArchive}, {"hermes.wheels_archive", l.Hermes.WheelsArchive},
 	} {
-		if value < 1 {
-			return fmt.Errorf("%s must be a positive integer", name)
+		if err := validateHTTPSURL(item.name, item.value); err != nil {
+			return err
 		}
 	}
-	switch c.NetworkMode {
-	case "full", "none", "strict":
-	default:
-		return fmt.Errorf("HERMES_BOX_NETWORK_MODE must be strict, full, or none")
+	if !datedImage.MatchString(l.Ubuntu.Image) {
+		return errors.New("ubuntu.image must use a dated release directory")
 	}
-	if c.HermesCommit != "" {
-		if len(c.HermesCommit) != 40 {
-			return fmt.Errorf("HERMES_BOX_HERMES_COMMIT must be a full 40-character Git commit")
-		}
-		if _, err := strconv.ParseUint(c.HermesCommit[:16], 16, 64); err != nil {
-			return fmt.Errorf("HERMES_BOX_HERMES_COMMIT must be hexadecimal")
-		}
-		if _, err := strconv.ParseUint(c.HermesCommit[16:32], 16, 64); err != nil {
-			return fmt.Errorf("HERMES_BOX_HERMES_COMMIT must be hexadecimal")
-		}
-		if _, err := strconv.ParseUint(c.HermesCommit[32:], 16, 64); err != nil {
-			return fmt.Errorf("HERMES_BOX_HERMES_COMMIT must be hexadecimal")
+	for _, item := range []struct{ name, value string }{
+		{"ubuntu.sha256", l.Ubuntu.SHA256}, {"ubuntu.provisioner_sha256", l.Ubuntu.ProvisionerSHA256},
+		{"tooling.node.sha256", l.Tooling.Node.SHA256}, {"tooling.uv.sha256", l.Tooling.UV.SHA256},
+		{"codex.sha256", l.Codex.SHA256}, {"hermes.sha256", l.Hermes.SHA256},
+		{"hermes.uv_lock_sha256", l.Hermes.UVLockSHA256}, {"hermes.python_sha256", l.Hermes.PythonSHA256},
+		{"hermes.wheels_sha256", l.Hermes.WheelsSHA256},
+	} {
+		if !hex64Pattern.MatchString(item.value) {
+			return fmt.Errorf("%s must be 64 lowercase hexadecimal characters", item.name)
 		}
 	}
-	return nil
-}
-
-func loadFile(cfg *Config, path string) error {
-	file, err := os.Open(path)
-	if os.IsNotExist(err) {
-		return nil
+	if l.Tooling.Node.Version == "" || l.Tooling.UV.Version == "" || l.Claude.Version == "" || l.Codex.Version == "" {
+		return errors.New("component versions must not be empty")
 	}
-	if err != nil {
-		return fmt.Errorf("open config %s: %w", path, err)
+	if l.Claude.Package == "" {
+		return errors.New("claude.package must not be empty")
 	}
-	defer file.Close()
-
-	scanner := bufio.NewScanner(file)
-	lineNumber := 0
-	for scanner.Scan() {
-		lineNumber++
-		key, value, ok, err := parseAssignment(scanner.Text())
-		if err != nil {
-			return fmt.Errorf("%s:%d: %w", path, lineNumber, err)
-		}
-		if !ok {
-			continue
-		}
-		setter, known := keys[key]
-		if !known {
-			if strings.HasPrefix(key, "HERMES_BOX_") {
-				return fmt.Errorf(
-					"%s:%d: unknown Hermes Box setting %q",
-					path,
-					lineNumber,
-					key,
-				)
-			}
-			continue
-		}
-		if err := setter(cfg, value); err != nil {
-			return fmt.Errorf("%s:%d: %w", path, lineNumber, err)
-		}
+	integrity, ok := strings.CutPrefix(l.Claude.Integrity, "sha512-")
+	decodedIntegrity, err := base64.StdEncoding.Strict().DecodeString(integrity)
+	if !ok || err != nil || len(decodedIntegrity) != 64 {
+		return errors.New("claude.integrity must be a sha512 SRI value")
 	}
-	if err := scanner.Err(); err != nil {
-		return fmt.Errorf("read config %s: %w", path, err)
+	if !hex40Pattern.MatchString(l.Hermes.Commit) {
+		return errors.New("hermes.commit must be a full lowercase hexadecimal Git commit")
+	}
+	if err := validatePinnedImage(l.Executor.Image); err != nil {
+		return fmt.Errorf("executor.image %w", err)
+	}
+	if !digestPattern.MatchString(l.Executor.LinuxARM64Digest) {
+		return errors.New("executor.linux_arm64_digest must be a full sha256 digest")
 	}
 	return nil
 }
 
-func parseAssignment(line string) (string, string, bool, error) {
-	line = strings.TrimSpace(line)
-	if line == "" || strings.HasPrefix(line, "#") {
-		return "", "", false, nil
-	}
-	line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
-	equal := strings.IndexByte(line, '=')
-	if equal < 1 {
-		return "", "", false, fmt.Errorf("expected KEY=VALUE assignment")
-	}
-	key := strings.TrimSpace(line[:equal])
-	if !validIdentifier(key) {
-		return "", "", false, fmt.Errorf("invalid variable name %q", key)
-	}
-	value, err := parseValue(strings.TrimSpace(line[equal+1:]))
+func decodeStrictFile(path string, target any) error {
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return "", "", false, err
+		return fmt.Errorf("read %s: %w", path, err)
 	}
-	return key, value, true, nil
-}
-
-func parseValue(value string) (string, error) {
-	if value == "" {
-		return "", nil
+	decoder := yaml.NewDecoder(bytes.NewReader(data))
+	decoder.KnownFields(true)
+	if err := decoder.Decode(target); err != nil {
+		return fmt.Errorf("decode %s: %w", path, err)
 	}
-	switch value[0] {
-	case '\'':
-		end := strings.IndexByte(value[1:], '\'')
-		if end < 0 {
-			return "", fmt.Errorf("unterminated single-quoted value")
+	var extra any
+	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return fmt.Errorf("decode %s: multiple YAML documents are not allowed", path)
 		}
-		end++
-		if strings.TrimSpace(value[end+1:]) != "" && !strings.HasPrefix(strings.TrimSpace(value[end+1:]), "#") {
-			return "", fmt.Errorf("unexpected content after quoted value")
-		}
-		return value[1:end], nil
-	case '"':
-		end := quotedEnd(value)
-		if end < 0 {
-			return "", fmt.Errorf("unterminated double-quoted value")
-		}
-		if strings.TrimSpace(value[end+1:]) != "" && !strings.HasPrefix(strings.TrimSpace(value[end+1:]), "#") {
-			return "", fmt.Errorf("unexpected content after quoted value")
-		}
-		parsed, err := strconv.Unquote(value[:end+1])
-		if err != nil {
-			return "", fmt.Errorf("invalid double-quoted value: %w", err)
-		}
-		return parsed, nil
-	default:
-		if comment := strings.Index(value, " #"); comment >= 0 {
-			value = value[:comment]
-		}
-		return strings.TrimSpace(value), nil
+		return fmt.Errorf("decode %s: %w", path, err)
 	}
-}
-
-func quotedEnd(value string) int {
-	escaped := false
-	for index := 1; index < len(value); index++ {
-		if escaped {
-			escaped = false
-			continue
-		}
-		if value[index] == '\\' {
-			escaped = true
-			continue
-		}
-		if value[index] == '"' {
-			return index
-		}
-	}
-	return -1
-}
-
-func validIdentifier(value string) bool {
-	if value == "" || !isIdentifierStart(value[0]) {
-		return false
-	}
-	for index := 1; index < len(value); index++ {
-		if !isIdentifierStart(value[index]) && (value[index] < '0' || value[index] > '9') {
-			return false
-		}
-	}
-	return true
-}
-
-func isIdentifierStart(value byte) bool {
-	return value == '_' || value >= 'A' && value <= 'Z' || value >= 'a' && value <= 'z'
-}
-
-func setInt(target *int, name, value string) error {
-	if value == "" {
-		switch name {
-		case "HERMES_BOX_SSH_PORT":
-			*target = defaultSSHPort
-		case "HERMES_BOX_CPUS":
-			*target = defaultCPUs
-		case "HERMES_BOX_MEMORY_MIB":
-			*target = defaultMemoryMiB
-		case "HERMES_BOX_STORAGE_GB":
-			*target = defaultStorageGB
-		case "HERMES_BOX_OVERLAY_GB":
-			*target = defaultOverlayGB
-		case "HERMES_BOX_EXECUTOR_PORT":
-			*target = defaultExecutorPort
-		}
-		return nil
-	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return fmt.Errorf("%s must be an integer", name)
-	}
-	*target = parsed
 	return nil
 }
 
-func setBool(target *bool, name, value string) error {
-	if value == "" {
-		*target = false
-		return nil
+func validateSize(name, value string, minimum, maximum int64) error {
+	match := sizePattern.FindStringSubmatch(value)
+	if match == nil {
+		return fmt.Errorf("%s must be a positive MiB, GiB, or TiB value", name)
 	}
-	parsed, err := strconv.ParseBool(value)
-	if err != nil {
-		return fmt.Errorf("%s must be true or false", name)
+	amount, _ := strconv.ParseInt(match[1], 10, 64)
+	multiplier := int64(1 << 20)
+	if match[2] == "GiB" {
+		multiplier = 1 << 30
+	} else if match[2] == "TiB" {
+		multiplier = 1 << 40
 	}
-	*target = parsed
+	if amount > maximum/multiplier {
+		return fmt.Errorf("%s exceeds the supported maximum", name)
+	}
+	bytes := amount * multiplier
+	if bytes < minimum || bytes > maximum {
+		return fmt.Errorf("%s is outside the supported range", name)
+	}
+	return nil
+}
+
+func validateHTTPSURL(name, value string) error {
+	parsed, err := url.Parse(value)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.User != nil {
+		return fmt.Errorf("%s must be an absolute HTTPS URL", name)
+	}
+	if parsed.Fragment != "" {
+		return fmt.Errorf("%s must not contain a fragment", name)
+	}
 	return nil
 }
 
 func validatePinnedImage(value string) error {
 	prefix, digest, ok := strings.Cut(value, "@sha256:")
-	if !ok || prefix == "" || len(digest) != 64 || strings.ContainsAny(prefix, " \t\r\n") {
-		return fmt.Errorf("must be an image tag pinned by a full sha256 digest")
+	if !ok || prefix == "" || !hex64Pattern.MatchString(digest) || strings.ContainsAny(prefix, " \t\r\n") {
+		return errors.New("must be an image tag pinned by a full sha256 digest")
 	}
 	lastSlash := strings.LastIndexByte(prefix, '/')
 	if !strings.Contains(prefix[lastSlash+1:], ":") {
-		return fmt.Errorf("must include an explicit version tag before its digest")
-	}
-	for start := 0; start < len(digest); start += 16 {
-		if _, err := strconv.ParseUint(digest[start:start+16], 16, 64); err != nil {
-			return fmt.Errorf("digest must be hexadecimal")
-		}
+		return errors.New("must include an explicit version tag before its digest")
 	}
 	return nil
 }
@@ -442,4 +366,13 @@ func environment(environ []string) map[string]string {
 		}
 	}
 	return result
+}
+
+func PortAvailable(port int) bool {
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err != nil {
+		return false
+	}
+	_ = listener.Close()
+	return true
 }

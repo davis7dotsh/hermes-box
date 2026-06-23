@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ ( -e /var/lib/hermes-box/update.json || -e /data/.hermes-box/restore-paths.json ) && ! -e /run/hermes-box-transaction-authorized ]]; then
+  printf 'pending Hermes Box transaction requires host-coordinated recovery\n' >&2
+  exit 1
+fi

@@ -1,11 +1,15 @@
 .DS_Store
-backups/*
-images/*
-state/*
-hermes-box.conf
-secret-env.txt
 dist/
-/*-hermes-*/
-!backups/.gitkeep
-!images/.gitkeep
-!state/.gitkeep
+coverage/
+/state/
+*.age
+*.age-key
+*.pem
+*.key
+.env
+.env.*
+!.env.example
+.hermes-box/
+
+# Local Miles box instances contain configs, credentials, images, and backups.
+/10xn-hermes-miles*/
