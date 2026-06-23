@@ -37,6 +37,10 @@ grep -Fq 'Before=hermes.service executor.service' guest/hermes-box-recover.servi
 grep -Fq '/var/lib/hermes-box/update.json' guest/hermes-box-recover
 grep -Fq 'xterm-ghostty.terminfo' release/build-provisioner.sh
 grep -Eq '^UBUNTU_APT_SNAPSHOT=[0-9]{8}T[0-9]{6}Z$' release/pins.env
+grep -Eq '^UBUNTU_APT_RESOLUTE_INRELEASE_SHA256=[a-f0-9]{64}$' release/pins.env
+grep -Eq '^UBUNTU_APT_RESOLUTE_UPDATES_INRELEASE_SHA256=[a-f0-9]{64}$' release/pins.env
+grep -Eq '^UBUNTU_APT_RESOLUTE_BACKPORTS_INRELEASE_SHA256=[a-f0-9]{64}$' release/pins.env
+grep -Eq '^UBUNTU_APT_RESOLUTE_SECURITY_INRELEASE_SHA256=[a-f0-9]{64}$' release/pins.env
 grep -Fq 'configure-apt-snapshot.sh' release/build-provisioner.sh
 grep -Fq 'gpgv --keyring "$keyring" "$inrelease"' release/configure-apt-snapshot.sh
 grep -Fq 'https://snapshot.ubuntu.com/ubuntu/' release/configure-apt-snapshot.sh
@@ -97,10 +101,24 @@ fi
 
 grep -Fq 'pull_request:' .github/workflows/release-artifacts.yml
 grep -Fq 'shell: bash' .github/workflows/release-artifacts.yml
+grep -Fq 'verify-release-tag:' .github/workflows/release-artifacts.yml
+grep -Fq 'needs: [build-and-verify, verify-release-tag]' .github/workflows/release-artifacts.yml
+grep -Fq 'URIs: http://snapshot.ubuntu.com/ubuntu/$UBUNTU_APT_SNAPSHOT' .github/workflows/release-artifacts.yml
+grep -Fq '[[ $seen == 4 ]]' .github/workflows/release-artifacts.yml
+grep -Fq 'expected four pinned Ubuntu InRelease indexes' release/configure-apt-snapshot.sh
 grep -Fq 'v2.0.0-baseline-assets' .github/workflows/release-artifacts.yml
 grep -Fq 'v2.0.0-assets' .github/workflows/release-artifacts.yml
 grep -Fq -- '-> release/qualification.lock.template' .agents/skills/update-hermes-box/references/components.md
-grep -Fq 'git cat-file -t "$GITHUB_REF"' .github/workflows/release-artifacts.yml
+grep -Fq 'EVENT_COMMIT: ${{ github.event.after }}' .github/workflows/release-artifacts.yml
+grep -Fq 'event_commit=$(git rev-parse "$EVENT_COMMIT^{commit}")' .github/workflows/release-artifacts.yml
+grep -Fq 'workflow_commit=$(git rev-parse "$GITHUB_SHA^{commit}")' .github/workflows/release-artifacts.yml
+grep -Fq '[[ $event_commit != "$workflow_commit" ]]' .github/workflows/release-artifacts.yml
+grep -Fq 'tag_commit=$(git rev-parse "$tag_ref^{commit}")' .github/workflows/release-artifacts.yml
+grep -Fq '[[ $tag_commit != "$event_commit" ]]' .github/workflows/release-artifacts.yml
+grep -Fq 'Immutable Hermes Box v2 asset tags' .github/workflows/release-artifacts.yml
+grep -Fq 'select((.bypass_actors | length) == 0)' .github/workflows/release-artifacts.yml
+grep -Fq 'protected_ruleset_id=$(gh api' .github/workflows/release-artifacts.yml
+grep -Fq -- '--verify-tag' .github/workflows/release-artifacts.yml
 grep -Fq 'git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main' .github/workflows/release-artifacts.yml
 grep -Fq '"internal/**"' .github/workflows/release-artifacts.yml
 grep -Fq 'Prove the exact Executor child loads and runs in Podman' .github/workflows/release-artifacts.yml

@@ -24,6 +24,12 @@ permissions:
 jobs:
   build-and-verify:
     runs-on: ubuntu-24.04-arm
+    env:
+      UBUNTU_APT_SNAPSHOT: 20260612T235959Z
+      UBUNTU_APT_RESOLUTE_INRELEASE_SHA256: 45f95ce276cdba3e41870516a130e03c58b8b7a79e9546b0efe9e526d255740c
+      UBUNTU_APT_RESOLUTE_UPDATES_INRELEASE_SHA256: 9db03564f66c0fad76abb5da0122cd170301fc8d2b50e6fa6e0b2376524d918c
+      UBUNTU_APT_RESOLUTE_BACKPORTS_INRELEASE_SHA256: f8ce7a267f29066d97590d973497c0a9f51045d6fbe8fb2e6851554045a7eaa3
+      UBUNTU_APT_RESOLUTE_SECURITY_INRELEASE_SHA256: 038b5ebe4fbd0f8877ab877e202236c32ed204a133f193b4d086397fcc6d7dd0
     defaults:
       run:
         shell: bash
@@ -33,10 +39,34 @@ jobs:
     steps:
       - name: Install build prerequisites
         run: |
-          # These packages run the build; they are not included in the guest
-          # provisioner closure. The closure itself is resolved and verified
-          # from the immutable snapshot below.
+          # Bootstrap archive-producing tools from the exact signed snapshot.
+          # The base image has no CA bundle. Bootstrap over HTTP, but verify
+          # every timestamp-specific InRelease hash before installing a byte.
+          sources=/etc/apt/sources.list.d/ubuntu.sources
+          test -f "$sources"
+          sed -i \
+            -e '/^[[:space:]]*Snapshot:/d' \
+            -e "s|^[[:space:]]*URIs:.*|URIs: http://snapshot.ubuntu.com/ubuntu/$UBUNTU_APT_SNAPSHOT|" \
+            "$sources"
+          rm -rf /var/lib/apt/lists/*
           apt-get update
+          seen=0
+          for inrelease in /var/lib/apt/lists/*_InRelease; do
+            case $(basename "$inrelease") in
+              *_dists_resolute_InRelease)
+                expected=$UBUNTU_APT_RESOLUTE_INRELEASE_SHA256 ;;
+              *_dists_resolute-updates_InRelease)
+                expected=$UBUNTU_APT_RESOLUTE_UPDATES_INRELEASE_SHA256 ;;
+              *_dists_resolute-backports_InRelease)
+                expected=$UBUNTU_APT_RESOLUTE_BACKPORTS_INRELEASE_SHA256 ;;
+              *_dists_resolute-security_InRelease)
+                expected=$UBUNTU_APT_RESOLUTE_SECURITY_INRELEASE_SHA256 ;;
+              *) printf 'unexpected bootstrap InRelease: %s\n' "$inrelease" >&2; exit 1 ;;
+            esac
+            printf '%s  %s\n' "$expected" "$inrelease" | sha256sum --check
+            ((seen += 1))
+          done
+          [[ $seen == 4 ]]
           DEBIAN_FRONTEND=noninteractive apt-get \
             install -y --no-install-recommends \
             ca-certificates curl git jq sudo tar util-linux zstd
@@ -47,6 +77,11 @@ jobs:
         run: release/configure-apt-snapshot.sh
       - name: Verify workflow and release builder pins agree
         run: |
+          workflow_snapshot=$UBUNTU_APT_SNAPSHOT
+          workflow_resolute=$UBUNTU_APT_RESOLUTE_INRELEASE_SHA256
+          workflow_updates=$UBUNTU_APT_RESOLUTE_UPDATES_INRELEASE_SHA256
+          workflow_backports=$UBUNTU_APT_RESOLUTE_BACKPORTS_INRELEASE_SHA256
+          workflow_security=$UBUNTU_APT_RESOLUTE_SECURITY_INRELEASE_SHA256
           . release/pins.env
           workflow_image=$(awk '
             /^[[:space:]]+container:/ { in_container=1; next }
@@ -62,6 +97,15 @@ jobs:
               "$workflow_image" "$UBUNTU_BUILDER_IMAGE" >&2
             exit 1
           fi
+          if [[ $workflow_snapshot != "$UBUNTU_APT_SNAPSHOT" ]]; then
+            printf 'workflow snapshot %s does not match release pin %s\n' \
+              "$workflow_snapshot" "$UBUNTU_APT_SNAPSHOT" >&2
+            exit 1
+          fi
+          [[ $workflow_resolute == "$UBUNTU_APT_RESOLUTE_INRELEASE_SHA256" ]]
+          [[ $workflow_updates == "$UBUNTU_APT_RESOLUTE_UPDATES_INRELEASE_SHA256" ]]
+          [[ $workflow_backports == "$UBUNTU_APT_RESOLUTE_BACKPORTS_INRELEASE_SHA256" ]]
+          [[ $workflow_security == "$UBUNTU_APT_RESOLUTE_SECURITY_INRELEASE_SHA256" ]]
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: go.mod
@@ -168,9 +212,78 @@ jobs:
           compression-level: 0
           retention-days: 7
 
+  verify-release-tag:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v2.0.0-')
+    runs-on: ubuntu-24.04-arm
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: true
+      - name: Require an immutable annotated tag on reviewed main
+        env:
+          EVENT_COMMIT: ${{ github.event.after }}
+        run: |
+          case $GITHUB_REF_NAME in
+            v2.0.0-baseline-assets | v2.0.0-assets) ;;
+            *) printf 'unsupported release tag: %s\n' "$GITHUB_REF_NAME" >&2; exit 1 ;;
+          esac
+          ruleset_id=$(gh api "repos/$GITHUB_REPOSITORY/rulesets" --jq '
+            .[] | select(.name == "Immutable Hermes Box v2 asset tags") |
+            select(.target == "tag" and .enforcement == "active") | .id')
+          protected_ruleset_id=$(gh api \
+            "repos/$GITHUB_REPOSITORY/rulesets/$ruleset_id" --jq '
+            select(.conditions.ref_name.include | index("refs/tags/v2.0.0-*")) |
+            select(([.rules[].type] | index("update")) != null) |
+            select(([.rules[].type] | index("deletion")) != null) |
+            select((.bypass_actors | length) == 0) |
+            .id')
+          if [[ -z $ruleset_id || $protected_ruleset_id != "$ruleset_id" ]]; then
+            printf 'active no-bypass update/deletion protection is required for v2 asset tags\n' >&2
+            exit 1
+          fi
+          event_commit=$(git rev-parse "$EVENT_COMMIT^{commit}")
+          workflow_commit=$(git rev-parse "$GITHUB_SHA^{commit}")
+          if [[ $event_commit != "$workflow_commit" ]]; then
+            printf 'push event commit %s does not match workflow commit %s\n' \
+              "$event_commit" "$workflow_commit" >&2
+            exit 1
+          fi
+          git fetch --force --no-tags origin \
+            "refs/tags/$GITHUB_REF_NAME:refs/tags/$GITHUB_REF_NAME"
+          tag_ref="refs/tags/$GITHUB_REF_NAME"
+          if [[ $(git cat-file -t "$tag_ref") != tag ]]; then
+            printf 'asset publication requires an annotated tag: %s\n' \
+              "$GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          object_tag_name=$(git cat-file -p "$tag_ref" | sed -n 's/^tag //p')
+          if [[ $object_tag_name != "$GITHUB_REF_NAME" ]]; then
+            printf 'event tag object names %s, expected %s\n' \
+              "$object_tag_name" "$GITHUB_REF_NAME" >&2
+            exit 1
+          fi
+          tag_commit=$(git rev-parse "$tag_ref^{commit}")
+          if [[ $tag_commit != "$event_commit" ]]; then
+            printf 'current tag commit %s does not match push event commit %s\n' \
+              "$tag_commit" "$event_commit" >&2
+            exit 1
+          fi
+          git fetch --no-tags origin \
+            '+refs/heads/main:refs/remotes/origin/main'
+          if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
+            printf 'release tag commit %s is not reachable from reviewed main\n' \
+              "$tag_commit" >&2
+            exit 1
+          fi
+
   publish:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v2.0.0-')
-    needs: build-and-verify
+    needs: [build-and-verify, verify-release-tag]
     runs-on: ubuntu-24.04-arm
     permissions:
       attestations: write
@@ -182,33 +295,11 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0
-          # This publish-only job needs authenticated git fetches to prove the
-          # annotated tag is reachable from reviewed main.
-          persist-credentials: true
+          persist-credentials: false
       - uses: actions/setup-go@4a3601121dd01d1626a1e23e37211e3254c1c06c # v6.4.0
         with:
           go-version-file: go.mod
           cache: false
-      - name: Require an immutable annotated tag on reviewed main
-        run: |
-          . release/pins.env
-          case $GITHUB_REF_NAME in
-            "$BASELINE_ASSET_RELEASE" | "$ASSET_RELEASE") ;;
-            *) printf 'unsupported release tag: %s\n' "$GITHUB_REF_NAME" >&2; exit 1 ;;
-          esac
-          if [[ $(git cat-file -t "$GITHUB_REF") != tag ]]; then
-            printf 'asset publication requires an annotated tag: %s\n' \
-              "$GITHUB_REF_NAME" >&2
-            exit 1
-          fi
-          tag_commit=$(git rev-parse "$GITHUB_REF^{commit}")
-          git fetch --no-tags origin \
-            '+refs/heads/main:refs/remotes/origin/main'
-          if ! git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main; then
-            printf 'release tag commit %s is not reachable from reviewed main\n' \
-              "$tag_commit" >&2
-            exit 1
-          fi
       - uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6
         with:
           name: hermes-box-v2-linux-arm64-${{ github.sha }}
@@ -234,6 +325,14 @@ jobs:
               "$asset_release" >&2
             exit 1
           fi
+          git fetch --force --no-tags origin \
+            "refs/tags/$asset_release:refs/tags/$asset_release"
+          tag_ref="refs/tags/$asset_release"
+          if [[ $(git cat-file -t "$tag_ref") != tag ]] || \
+             [[ $(git rev-parse "$tag_ref^{commit}") != $(git rev-parse "$GITHUB_SHA^{commit}") ]]; then
+            printf 'release tag no longer resolves to the annotated workflow commit\n' >&2
+            exit 1
+          fi
           title='Hermes Box v2 qualified ARM64 inputs'
           notes='Reproducible Ubuntu 26.04 ARM64 provisioner and offline Hermes inputs. Promote the generated lock only after exact-URL verification and an isolated Lima lifecycle pass.'
           if [[ $asset_release == "$BASELINE_ASSET_RELEASE" ]]; then
@@ -244,6 +343,7 @@ jobs:
             "$artifact_dir"/*.tar.zst \
             "$artifact_dir"/*.tar.zst.sha256 \
             "$artifact_dir/hermes-box.lock" \
+            --verify-tag \
             --title "$title" \
             --notes "$notes"
       - name: Re-download and verify exact published URLs

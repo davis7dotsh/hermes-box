@@ -7,7 +7,7 @@ repo_root=''
 # shellcheck source=release/lib.sh
 source "$script_dir/lib.sh"
 require_linux_arm64
-require_command apt-get awk chmod find gpgv mv sort
+require_command apt-get awk chmod find gpgv mv sha256sum sort
 [[ $EUID -eq 0 ]] || {
   printf 'configure-apt-snapshot.sh must run as root\n' >&2
   exit 1
@@ -59,7 +59,24 @@ keyring=/usr/share/keyrings/ubuntu-archive-keyring.gpg
 [[ -f $keyring ]] || { printf 'Ubuntu archive keyring is missing\n' >&2; exit 1; }
 for inrelease in "${inreleases[@]}"; do
   gpgv --keyring "$keyring" "$inrelease" >/dev/null
+  case $(basename "$inrelease") in
+    *_dists_resolute_InRelease)
+      expected=$UBUNTU_APT_RESOLUTE_INRELEASE_SHA256 ;;
+    *_dists_resolute-updates_InRelease)
+      expected=$UBUNTU_APT_RESOLUTE_UPDATES_INRELEASE_SHA256 ;;
+    *_dists_resolute-backports_InRelease)
+      expected=$UBUNTU_APT_RESOLUTE_BACKPORTS_INRELEASE_SHA256 ;;
+    *_dists_resolute-security_InRelease)
+      expected=$UBUNTU_APT_RESOLUTE_SECURITY_INRELEASE_SHA256 ;;
+    *) printf 'unexpected Ubuntu InRelease: %s\n' "$inrelease" >&2; exit 1 ;;
+  esac
+  printf '%s  %s\n' "$expected" "$inrelease" | sha256sum --check >/dev/null
 done
+[[ ${#inreleases[@]} == 4 ]] || {
+  printf 'expected four pinned Ubuntu InRelease indexes, found %s\n' \
+    "${#inreleases[@]}" >&2
+  exit 1
+}
 
 if [[ -n $metadata_output ]]; then
   {
