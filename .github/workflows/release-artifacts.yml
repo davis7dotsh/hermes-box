@@ -50,26 +50,60 @@ jobs:
             -e "s|^[[:space:]]*URIs:.*|URIs: https://snapshot.ubuntu.com/ubuntu/$UBUNTU_APT_SNAPSHOT|" \
             "$sources"
           rm -rf /var/lib/apt/lists/*
-          apt-get -o Acquire::https::Verify-Peer=false update
-          seen=0
-          for inrelease in /var/lib/apt/lists/*_InRelease; do
-            case $(basename "$inrelease") in
-              *_dists_resolute_InRelease)
-                expected=$UBUNTU_APT_RESOLUTE_INRELEASE_SHA256 ;;
-              *_dists_resolute-updates_InRelease)
-                expected=$UBUNTU_APT_RESOLUTE_UPDATES_INRELEASE_SHA256 ;;
-              *_dists_resolute-backports_InRelease)
-                expected=$UBUNTU_APT_RESOLUTE_BACKPORTS_INRELEASE_SHA256 ;;
-              *_dists_resolute-security_InRelease)
-                expected=$UBUNTU_APT_RESOLUTE_SECURITY_INRELEASE_SHA256 ;;
-              *) printf 'unexpected bootstrap InRelease: %s\n' "$inrelease" >&2; exit 1 ;;
-            esac
-            printf '%s  %s\n' "$expected" "$inrelease" | sha256sum --check
-            ((seen += 1))
+          bootstrap_indexes_ready() (
+            local actual component expected inrelease package_index suite
+            local seen=0
+            shopt -s nullglob
+            local inreleases=(/var/lib/apt/lists/*_InRelease)
+            ((${#inreleases[@]} == 4)) || return 1
+            for inrelease in "${inreleases[@]}"; do
+              case $(basename "$inrelease") in
+                *_dists_resolute_InRelease)
+                  expected=$UBUNTU_APT_RESOLUTE_INRELEASE_SHA256 ;;
+                *_dists_resolute-updates_InRelease)
+                  expected=$UBUNTU_APT_RESOLUTE_UPDATES_INRELEASE_SHA256 ;;
+                *_dists_resolute-backports_InRelease)
+                  expected=$UBUNTU_APT_RESOLUTE_BACKPORTS_INRELEASE_SHA256 ;;
+                *_dists_resolute-security_InRelease)
+                  expected=$UBUNTU_APT_RESOLUTE_SECURITY_INRELEASE_SHA256 ;;
+                *) return 1 ;;
+              esac
+              printf '%s  %s\n' "$expected" "$inrelease" | sha256sum --check || return 1
+              ((seen += 1))
+            done
+            [[ $seen == 4 ]] || return 1
+            for suite in resolute resolute-updates resolute-backports resolute-security; do
+              local suite_inreleases=(/var/lib/apt/lists/*_dists_${suite}_InRelease)
+              ((${#suite_inreleases[@]} == 1)) || return 1
+              inrelease=${suite_inreleases[0]}
+              for component in main universe restricted multiverse; do
+                local package_indexes=(/var/lib/apt/lists/*_dists_${suite}_${component}_binary-arm64_Packages)
+                ((${#package_indexes[@]} == 1)) || return 1
+                package_index=${package_indexes[0]}
+                expected=$(awk -v path="$component/binary-arm64/Packages" \
+                  '$3 == path && $1 ~ /^[a-f0-9]{64}$/ { print $1 }' "$inrelease")
+                [[ $expected =~ ^[a-f0-9]{64}$ ]] || return 1
+                actual=$(sha256sum "$package_index")
+                [[ ${actual%% *} == "$expected" ]] || return 1
+              done
+            done
+          )
+          ready=false
+          for attempt in $(seq 1 30); do
+            apt-get -o Acquire::https::Verify-Peer=false \
+              -o Acquire::GzipIndexes=false update || true
+            if bootstrap_indexes_ready; then
+              ready=true
+              break
+            fi
+            printf 'snapshot bootstrap attempt %d incomplete; retaining verified lists\n' \
+              "$attempt" >&2
+            sleep 15
           done
-          [[ $seen == 4 ]]
+          [[ $ready == true ]]
           DEBIAN_FRONTEND=noninteractive apt-get \
             -o Acquire::https::Verify-Peer=false \
+            -o Acquire::Retries=10 \
             install -y --no-install-recommends \
             ca-certificates curl git jq sudo tar util-linux zstd
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0

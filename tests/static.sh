@@ -105,7 +105,12 @@ grep -Fq 'verify-release-tag:' .github/workflows/release-artifacts.yml
 grep -Fq 'needs: [build-and-verify, verify-release-tag]' .github/workflows/release-artifacts.yml
 grep -Fq 'URIs: https://snapshot.ubuntu.com/ubuntu/$UBUNTU_APT_SNAPSHOT' .github/workflows/release-artifacts.yml
 grep -Fq 'Acquire::https::Verify-Peer=false' .github/workflows/release-artifacts.yml
-grep -Fq '[[ $seen == 4 ]]' .github/workflows/release-artifacts.yml
+grep -Fq 'snapshot bootstrap attempt %d incomplete; retaining verified lists' .github/workflows/release-artifacts.yml
+grep -Fq 'snapshot verification attempt %d incomplete; retaining verified lists' release/configure-apt-snapshot.sh
+grep -Fq 'Acquire::GzipIndexes=false' .github/workflows/release-artifacts.yml
+grep -Fq 'component/binary-arm64/Packages' .github/workflows/release-artifacts.yml
+grep -Fq 'component/binary-arm64/Packages' release/configure-apt-snapshot.sh
+grep -Fq '${#packages[@]} == 16' release/configure-apt-snapshot.sh
 grep -Fq 'expected four pinned Ubuntu InRelease indexes' release/configure-apt-snapshot.sh
 grep -Fq 'v2.0.0-baseline-assets' .github/workflows/release-artifacts.yml
 grep -Fq 'v2.0.0-assets' .github/workflows/release-artifacts.yml

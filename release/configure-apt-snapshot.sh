@@ -39,11 +39,44 @@ mv "$rewritten_sources" "$ubuntu_sources"
 trap - EXIT
 
 rm -rf "${lists:?}"/*
-apt-get update
-
-mapfile -t inreleases < <(find "$lists" -maxdepth 1 -type f -name '*InRelease' -print | sort)
-mapfile -t packages < <(find "$lists" -maxdepth 1 -type f -name '*Packages*' -print | sort)
-((${#inreleases[@]} > 0 && ${#packages[@]} > 0)) || {
+ready=false
+for attempt in $(seq 1 30); do
+  apt-get -o Acquire::GzipIndexes=false update || true
+  mapfile -t inreleases < <(find "$lists" -maxdepth 1 -type f -name '*InRelease' -print | sort)
+  mapfile -t packages < <(find "$lists" -maxdepth 1 -type f -name '*Packages*' -print | sort)
+  package_indexes_complete=true
+  for suite in resolute resolute-updates resolute-backports resolute-security; do
+    mapfile -t suite_inreleases < <(find "$lists" -maxdepth 1 -type f \
+      -name "*_dists_${suite}_InRelease" -print)
+    if ((${#suite_inreleases[@]} != 1)); then
+      package_indexes_complete=false
+      continue
+    fi
+    for component in main universe restricted multiverse; do
+      mapfile -t component_packages < <(find "$lists" -maxdepth 1 -type f \
+        -name "*_dists_${suite}_${component}_binary-arm64_Packages" -print)
+      if ((${#component_packages[@]} != 1)); then
+        package_indexes_complete=false
+        continue
+      fi
+      expected=$(awk -v path="$component/binary-arm64/Packages" \
+        '$3 == path && $1 ~ /^[a-f0-9]{64}$/ { print $1 }' "${suite_inreleases[0]}")
+      actual=$(sha256_file "${component_packages[0]}")
+      if [[ ! $expected =~ ^[a-f0-9]{64}$ || $actual != "$expected" ]]; then
+        package_indexes_complete=false
+      fi
+    done
+  done
+  if ((${#inreleases[@]} == 4 && ${#packages[@]} == 16)) && \
+    [[ $package_indexes_complete == true ]]; then
+    ready=true
+    break
+  fi
+  printf 'snapshot verification attempt %d incomplete; retaining verified lists\n' \
+    "$attempt" >&2
+  sleep 15
+done
+[[ $ready == true ]] || {
   printf 'Ubuntu snapshot produced no InRelease or Packages indexes\n' >&2
   exit 1
 }
