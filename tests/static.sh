@@ -79,6 +79,7 @@ grep -Fq 'git cat-file -t "$GITHUB_REF"' .github/workflows/release-artifacts.yml
 grep -Fq 'git merge-base --is-ancestor "$tag_commit" refs/remotes/origin/main' .github/workflows/release-artifacts.yml
 grep -Fq '"internal/**"' .github/workflows/release-artifacts.yml
 grep -Fq 'Prove the exact Executor child loads and runs in Podman' .github/workflows/release-artifacts.yml
+grep -Fq -- '--cgroups=disabled' .github/workflows/release-artifacts.yml
 grep -Fq 'actions/attest-build-provenance@' .github/workflows/release-artifacts.yml
 grep -Fq 'HERMES_BOX_E2E_LOCK' tests/lifecycle.sh
 grep -Fq 'HERMES_BOX_E2E_ARTIFACT_DIR' tests/lifecycle.sh

@@ -93,6 +93,7 @@ jobs:
           test "$(podman --storage-driver=vfs image inspect \
             --format '{{.Digest}}' "$runtime_tag")" = "$EXECUTOR_ARM64_DIGEST"
           podman --storage-driver=vfs run --rm --pull=never --network=none \
+            --cgroups=disabled \
             --read-only --entrypoint /bin/sh "$runtime_tag" \
             -c 'test "$(uname -m)" = aarch64'
       - name: Build twice and prove deterministic outputs
