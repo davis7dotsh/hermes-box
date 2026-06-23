@@ -77,13 +77,13 @@ jobs:
               ((${#suite_inreleases[@]} == 1)) || return 1
               inrelease=${suite_inreleases[0]}
               for component in main universe restricted multiverse; do
-                local package_indexes=(/var/lib/apt/lists/*_dists_${suite}_${component}_binary-arm64_Packages)
+                local package_indexes=(/var/lib/apt/lists/*_dists_${suite}_${component}_binary-arm64_Packages*)
                 ((${#package_indexes[@]} == 1)) || return 1
                 package_index=${package_indexes[0]}
                 expected=$(awk -v path="$component/binary-arm64/Packages" \
                   '$3 == path && $1 ~ /^[a-f0-9]{64}$/ { print $1 }' "$inrelease")
                 [[ $expected =~ ^[a-f0-9]{64}$ ]] || return 1
-                actual=$(sha256sum "$package_index")
+                actual=$(/usr/lib/apt/apt-helper cat-file "$package_index" | sha256sum)
                 [[ ${actual%% *} == "$expected" ]] || return 1
               done
             done

@@ -7,7 +7,7 @@ repo_root=''
 # shellcheck source=release/lib.sh
 source "$script_dir/lib.sh"
 require_linux_arm64
-require_command apt-get awk chmod find gpgv mv sha256sum sort
+require_command apt-get awk chmod find gpgv mv sha256sum sort /usr/lib/apt/apt-helper
 [[ $EUID -eq 0 ]] || {
   printf 'configure-apt-snapshot.sh must run as root\n' >&2
   exit 1
@@ -54,14 +54,15 @@ for attempt in $(seq 1 30); do
     fi
     for component in main universe restricted multiverse; do
       mapfile -t component_packages < <(find "$lists" -maxdepth 1 -type f \
-        -name "*_dists_${suite}_${component}_binary-arm64_Packages" -print)
+        -name "*_dists_${suite}_${component}_binary-arm64_Packages*" -print)
       if ((${#component_packages[@]} != 1)); then
         package_indexes_complete=false
         continue
       fi
       expected=$(awk -v path="$component/binary-arm64/Packages" \
         '$3 == path && $1 ~ /^[a-f0-9]{64}$/ { print $1 }' "${suite_inreleases[0]}")
-      actual=$(sha256_file "${component_packages[0]}")
+      actual=$(/usr/lib/apt/apt-helper cat-file "${component_packages[0]}" | sha256sum)
+      actual=${actual%% *}
       if [[ ! $expected =~ ^[a-f0-9]{64}$ || $actual != "$expected" ]]; then
         package_indexes_complete=false
       fi

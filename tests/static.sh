@@ -110,6 +110,8 @@ grep -Fq 'snapshot verification attempt %d incomplete; retaining verified lists'
 grep -Fq 'Acquire::GzipIndexes=false' .github/workflows/release-artifacts.yml
 grep -Fq 'component/binary-arm64/Packages' .github/workflows/release-artifacts.yml
 grep -Fq 'component/binary-arm64/Packages' release/configure-apt-snapshot.sh
+grep -Fq 'apt-helper cat-file' .github/workflows/release-artifacts.yml
+grep -Fq 'apt-helper cat-file' release/configure-apt-snapshot.sh
 grep -Fq '${#packages[@]} == 16' release/configure-apt-snapshot.sh
 grep -Fq 'expected four pinned Ubuntu InRelease indexes' release/configure-apt-snapshot.sh
 grep -Fq 'v2.0.0-baseline-assets' .github/workflows/release-artifacts.yml
